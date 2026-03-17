@@ -1,0 +1,16 @@
+# Build output
+build/
+
+# Auto-generated (regenerate with: python codegen_builtins.py)
+src/scm_gml_builtins.gml
+
+# Python
+__pycache__/
+*.pyc
+
+# Backup files
+*.bak
+
+# IDE
+.vscode/
+*.swp

@@ -294,6 +294,24 @@ function scm_bi_substring(_args) {
     return scm_str(string_copy(_s, _start + 1, _end - _start));
 }
 
+function scm__is_number_str(_s) {
+    var _len = string_length(_s);
+    if (_len == 0) return false;
+    var _i = 1;
+    var _c = string_char_at(_s, 1);
+    if (_c == "+" || _c == "-") { _i++; if (_i > _len) return false; }
+    var _has_digit = false;
+    var _has_dot = false;
+    while (_i <= _len) {
+        _c = string_char_at(_s, _i);
+        if (_c >= "0" && _c <= "9") { _has_digit = true; }
+        else if (_c == "." && !_has_dot) { _has_dot = true; }
+        else { return false; }
+        _i++;
+    }
+    return _has_digit;
+}
+
 function scm_bi_string_to_number(_args) {
     if (_args.car.t != SCM_STR) return scm_err("string->number: expected string, got " + scm__type_name(_args.car.t));
     var _s = _args.car.v;
@@ -402,16 +420,19 @@ function scm_bi_integer_to_char(_args) {
 // ═══════════════════════════════════════════════════════════════════
 
 function scm_bi_display(_args) {
+    if (_args.t != SCM_PAIR) return scm_err("display: expected 1 argument, got 0");
     scm_output_write(scm_display_str(_args.car));
     return scm_void();
 }
 
 function scm_bi_write(_args) {
+    if (_args.t != SCM_PAIR) return scm_err("write: expected 1 argument, got 0");
     scm_output_write(scm_write_str(_args.car));
     return scm_void();
 }
 
 function scm_bi_print(_args) {
+    if (_args.t != SCM_PAIR) return scm_err("print: expected 1 argument, got 0");
     scm_output_write(scm_write_str(_args.car));
     scm_output_write("\n");
     return scm_void();

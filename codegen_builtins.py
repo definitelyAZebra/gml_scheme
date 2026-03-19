@@ -153,12 +153,63 @@ BUILTIN_SPEC: list[tuple[str, str, list[str] | None, str]] = [
 
     # ── Debug / IO ───────────────────────────────────────────────
     ("gml:show-debug-message",  "show_debug_message",   ["raw"], "void"),
+
+    # ── Keyboard ─────────────────────────────────────────────────
+    ("gml:keyboard-string",         "keyboard_string",            None, "str"),
+    ("gml:keyboard-string-clear!",  'keyboard_string = ""',       None, "void"),
+    ("gml:keyboard-check",          "keyboard_check",             ["num"], "bool"),
+    ("gml:keyboard-check-pressed",  "keyboard_check_pressed",     ["num"], "bool"),
+    ("gml:keyboard-clear",          "keyboard_clear",             ["num"], "void"),
+    ("gml:ord",                     "ord",                        ["str"], "num"),
+
+    # ── Clipboard ────────────────────────────────────────────────
+    ("gml:clipboard-has-text?",     "clipboard_has_text",         [], "bool"),
+    ("gml:clipboard-get-text",      "clipboard_get_text",         [], "str"),
+
+    # ── Draw ─────────────────────────────────────────────────────
+    ("gml:draw-text-color",         "draw_text_color",            ["num", "num", "str", "num", "num", "num", "num", "num"], "void"),
+    ("gml:draw-set-font",           "draw_set_font",              ["num"], "void"),
+    ("gml:draw-get-font",           "draw_get_font",              [], "num"),
+    ("gml:draw-set-alpha",          "draw_set_alpha",             ["num"], "void"),
+    ("gml:draw-get-alpha",          "draw_get_alpha",             [], "num"),
+    ("gml:draw-set-color",          "draw_set_color",             ["num"], "void"),
+    ("gml:draw-get-color",          "draw_get_color",             [], "num"),
+    ("gml:draw-rectangle-color",    "draw_rectangle_color",       ["num", "num", "num", "num", "num", "num", "num", "num", "num"], "void"),
+    ("gml:make-color-rgb",          "make_color_rgb",             ["num", "num", "num"], "num"),
+
+    # ── String measurement ───────────────────────────────────────
+    ("gml:string-width",            "string_width",               ["str"], "num"),
+    ("gml:string-height",           "string_height",              ["str"], "num"),
+
+    # ── Display ──────────────────────────────────────────────────
+    ("gml:display-get-gui-width",   "display_get_gui_width",      [], "num"),
+    ("gml:display-get-gui-height",  "display_get_gui_height",     [], "num"),
+
+    # ── VK constants (expression reads) ──────────────────────────
+    ("gml:vk-left",       "vk_left",       None, "num"),
+    ("gml:vk-right",      "vk_right",      None, "num"),
+    ("gml:vk-up",         "vk_up",         None, "num"),
+    ("gml:vk-down",       "vk_down",       None, "num"),
+    ("gml:vk-enter",      "vk_enter",      None, "num"),
+    ("gml:vk-backspace",  "vk_backspace",  None, "num"),
+    ("gml:vk-delete",     "vk_delete",     None, "num"),
+    ("gml:vk-home",       "vk_home",       None, "num"),
+    ("gml:vk-end",        "vk_end",        None, "num"),
+    ("gml:vk-tab",        "vk_tab",        None, "num"),
+    ("gml:vk-escape",     "vk_escape",     None, "num"),
+    ("gml:vk-shift",      "vk_shift",      None, "num"),
+    ("gml:vk-control",    "vk_control",    None, "num"),
+    ("gml:vk-f1",         "vk_f1",         None, "num"),
 ]
 
 
 def _sanitize_fn_name(scheme_name: str) -> str:
     """Turn 'gml:ds-map-find-value' into 'scm_bi_gml__ds_map_find_value'."""
-    base = scheme_name.replace("gml:", "gml__").replace("-", "_")
+    base = (scheme_name
+            .replace("gml:", "gml__")
+            .replace("-", "_")
+            .replace("?", "_p")
+            .replace("!", "_x"))
     return f"scm_bi_{base}"
 
 
@@ -181,6 +232,13 @@ def _generate_function(
     ret_hint = return_type
     lines.append(f"/// ({scheme_name}{(' ' + arg_hint) if arg_hint else ''}) → {ret_hint}")
     lines.append(f"function {fn_name}(_args) {{")
+
+    # Arity validation (prevent crash on nil .car access)
+    if nargs > 0:
+        arity_checks = []
+        for i in range(nargs):
+            arity_checks.append("_args" + ".cdr" * i + ".t != SCM_PAIR")
+        lines.append(f'    if ({" || ".join(arity_checks)}) return scm_err("{scheme_name}: expected {nargs} argument(s)");')
 
     # Unwrap arguments (with optional type checks)
     arg_vars: list[str] = []

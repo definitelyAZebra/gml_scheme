@@ -9,6 +9,17 @@
 
 function scm_eval(_expr, _env) {
     while (true) {
+        // Fuel check — prevent infinite loops from freezing the game
+        global.__scm_fuel -= 1;
+        if (global.__scm_fuel <= 0) {
+            var _step_str = string(global.__scm_fuel_limit);
+            show_debug_message("[scm] eval fuel exhausted after " + _step_str + " steps");
+            if (_expr.t == SCM_PAIR && _expr.car.t == SCM_SYM) {
+                show_debug_message("[scm]   last form: (" + _expr.car.v + " ...)");
+            }
+            return scm_err("eval fuel exhausted (" + _step_str + " steps)");
+        }
+
         // Self-evaluating types
         var _t = _expr.t;
         if (_t == SCM_NUM || _t == SCM_STR || _t == SCM_BOOL ||
@@ -255,6 +266,42 @@ function scm_eval(_expr, _env) {
             if (_form == "case") {
                 return scm__eval_case(_rest, _env);
             }
+
+            // (guard (var clause ...) body ...)
+            // Eval body. If error, bind error msg to var and try clauses.
+            // Each clause: (test expr ...) — if test is #t or truthy, eval exprs.
+            if (_form == "guard") {
+                var _clause_spec = scm_car(_rest);   // (var clause ...)
+                var _body_exprs  = scm_cdr(_rest);   // body ...
+                var _err_var     = scm_car(_clause_spec);  // symbol
+                var _clauses     = scm_cdr(_clause_spec);  // ((test expr ...) ...)
+
+                // Eval body expressions
+                var _result = scm_eval_body(_body_exprs, _env);
+
+                // If no error, return result
+                if (_result.t != SCM_ERR) return _result;
+
+                // Error: bind error message to var and try clauses
+                var _guard_env = scm_env_new(_env);
+                scm_env_set(_guard_env, _err_var.v, scm_str(_result.v));
+
+                var _clause = _clauses;
+                while (_clause.t == SCM_PAIR) {
+                    var _c = _clause.car;        // (test expr ...)
+                    var _test = scm_eval(scm_car(_c), _guard_env);
+                    if (_test.t == SCM_ERR) return _test;
+                    if (_test.t != SCM_BOOL || _test.v != false) {
+                        // Test passed — eval clause body
+                        var _c_body = scm_cdr(_c);
+                        if (_c_body.t != SCM_PAIR) return _test;
+                        return scm_eval_body(_c_body, _guard_env);
+                    }
+                    _clause = _clause.cdr;
+                }
+                // No clause matched — re-raise
+                return _result;
+            }
         }
 
         // ── Function application ────────────────────────────────────
@@ -282,11 +329,19 @@ function scm_eval(_expr, _env) {
         }
 
         if (_fn.t == SCM_FN) {
-            return _fn.fn(_args);
+            try {
+                return _fn.fn(_args);
+            } catch (_e) {
+                return scm_err(_fn.name + ": " + string(_e));
+            }
         }
 
         if (_fn.t == SCM_HANDLE && _fn.ht == SCM_HT_METHOD) {
-            return scm__call_gml_method(_fn.v, _args);
+            try {
+                return scm__call_gml_method(_fn.v, _args);
+            } catch (_e) {
+                return scm_err("method call: " + string(_e));
+            }
         }
 
         return scm_err("not a procedure: " + scm_to_string(_fn));
@@ -297,7 +352,11 @@ function scm_eval(_expr, _env) {
 
 function scm_apply(_fn, _args) {
     if (_fn.t == SCM_FN) {
-        return _fn.fn(_args);
+        try {
+            return _fn.fn(_args);
+        } catch (_e) {
+            return scm_err(_fn.name + ": " + string(_e));
+        }
     }
     if (_fn.t == SCM_LAMBDA) {
         var _new_env = scm_env_new(_fn.env);
@@ -306,7 +365,11 @@ function scm_apply(_fn, _args) {
         return scm_eval_body(_fn.body, _new_env);
     }
     if (_fn.t == SCM_HANDLE && _fn.ht == SCM_HT_METHOD) {
-        return scm__call_gml_method(_fn.v, _args);
+        try {
+            return scm__call_gml_method(_fn.v, _args);
+        } catch (_e) {
+            return scm_err("method call: " + string(_e));
+        }
     }
     return scm_err("not a procedure: " + scm_to_string(_fn));
 }

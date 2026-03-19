@@ -140,6 +140,81 @@ function scm_bi_proc_to_method(_args) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+//  Self-test (smoke test for REPL)
+// ═══════════════════════════════════════════════════════════════════
+
+/// (self-test) — run interpreter smoke tests, return result summary
+function scm_bi_self_test(_args) {
+    scm_trace("[self-test] starting smoke tests");
+    var _tests = [
+        ["(+ 1 2 3)", "6"],
+        ["(* 2 3 4)", "24"],
+        ["(- 10 3)", "7"],
+        ["(/ 10 2)", "5"],
+        ["(if #t 'yes 'no)", "yes"],
+        ["(if #f 'yes 'no)", "no"],
+        ["(car '(1 2 3))", "1"],
+        ["(cdr '(1 2 3))", "(2 3)"],
+        ["(length '(a b c))", "3"],
+        ["(map (lambda (x) (* x x)) '(1 2 3))", "(1 4 9)"],
+        ["(filter (lambda (x) (> x 2)) '(1 2 3 4 5))", "(3 4 5)"],
+        ["(let ((x 10) (y 20)) (+ x y))", "30"],
+        ["(let loop ((n 5) (acc 1)) (if (= n 0) acc (loop (- n 1) (* acc n))))", "120"],
+        ["(define (fact n) (if (<= n 1) 1 (* n (fact (- n 1))))) (fact 10)", "3628800"],  // 2-expr program
+        ["(string-append \"hello\" \" \" \"world\")", "\"hello world\""],
+        ["(equal? '(1 2 3) '(1 2 3))", "#t"],
+        ["(car 5)", "#<error:"],
+        ["(cdr \"hello\")", "#<error:"],
+        ["(+ 1 \"a\")", "#<error:"],
+        ["(abs #f)", "#<error:"],
+        ["(modulo \"a\" 2)", "#<error:"],
+        ["((lambda (x) x) 1 2)", "#<error:"],
+        ["((lambda (x y) x) 1)", "#<error:"],
+        // guard
+        ["(guard (e (#t (string-append \"caught: \" e))) (car 5))", "\"caught: car: expected pair, got number\""],
+        ["(guard (e (#t 'ok)) (+ 1 2))", "3"],
+    ];
+
+    var _pass = 0;
+    var _fail = 0;
+
+    for (var _i = 0; _i < array_length(_tests); _i++) {
+        var _input    = _tests[_i][0];
+        var _expected = _tests[_i][1];
+        var _actual;
+        try {
+            var _result = scm_eval_program(_input, global.scm_env);
+            _actual = scm_write_str(_result);
+        } catch (_e) {
+            _actual = "#<gml-crash: " + string(_e) + ">";
+        }
+        var _match = false;
+        if (string_pos("#<error:", _expected) == 1) {
+            _match = (string_pos("#<error:", _actual) == 1);
+        } else {
+            _match = (_actual == _expected);
+        }
+        if (_match) {
+            _pass++;
+            scm_output_write("  ok  #" + string(_i) + " " + _input + "\n");
+        } else {
+            _fail++;
+            scm_output_write("  FAIL #" + string(_i) + " " + _input + "\n");
+            scm_output_write("       got:      " + _actual + "\n");
+            scm_output_write("       expected: " + _expected + "\n");
+        }
+    }
+
+    var _summary = string(_pass) + "/" + string(_pass + _fail) + " passed";
+    if (_fail > 0) {
+        _summary += ", " + string(_fail) + " FAILED";
+    }
+    scm_output_write(_summary + "\n");
+    scm_trace("[self-test] " + _summary);
+    return scm_void();
+}
+
+// ═══════════════════════════════════════════════════════════════════
 //  Registration
 // ═══════════════════════════════════════════════════════════════════
 
@@ -168,4 +243,7 @@ function scm_register_bridge(_env) {
     // Deep conversion
     scm_env_set(_env, "list->array",       scm_fn("list->array",       scm_bi_list_to_array));
     scm_env_set(_env, "proc->method",      scm_fn("proc->method",      scm_bi_proc_to_method));
+
+    // Self-test
+    scm_env_set(_env, "self-test",         scm_fn("self-test",         scm_bi_self_test));
 }

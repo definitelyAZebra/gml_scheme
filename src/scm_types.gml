@@ -30,14 +30,15 @@
 // Every Scheme value carries `__tag: global.__scm_tag` so that scm_wrap()
 // can recognise structs that are already Scheme values and NOT re-wrap
 // them as SCM_HANDLE(STRUCT).
-function __ScmTag() constructor {}
-global.__scm_tag = new __ScmTag();
+// Sentinel is a plain struct — reference equality is enough to detect it.
+// (Avoids is_instanceof which requires GMS 2022.8+.)
+global.__scm_tag = {};
 
 /// Return true if _val is a tagged Scheme value.
 function scm__is_tagged(_val) {
     return is_struct(_val)
         && variable_struct_exists(_val, "__tag")
-        && is_instanceof(variable_struct_get(_val, "__tag"), __ScmTag);
+        && variable_struct_get(_val, "__tag") == global.__scm_tag;
 }
 
 // ── Singletons ──────────────────────────────────────────────────────

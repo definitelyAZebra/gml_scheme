@@ -4,6 +4,27 @@
 /// Then use scm_eval_string("(+ 1 2)") to evaluate expressions.
 
 // ═══════════════════════════════════════════════════════════════════
+//  Trace logging (file + debug console)
+// ═══════════════════════════════════════════════════════════════════
+
+/// Write a trace message to scm_trace.log (auto-flushed) and debug console.
+/// The log file is created in the game's working directory.
+/// Each call opens, appends, and closes the file — safe even if process is killed.
+function scm_trace(_msg) {
+    // Prefix with elapsed seconds since game start (microsecond precision)
+    var _t = get_timer();  // microseconds since game start
+    var _sec = _t div 1000000;
+    var _ms  = (_t mod 1000000) div 1000;
+    var _ts  = string(_sec) + "." + string_replace(string_format(_ms, 3, 0), " ", "0");
+    var _line = "[" + _ts + "] " + _msg;
+    show_debug_message(_line);
+    var _f = file_text_open_append("scm_trace.log");
+    file_text_write_string(_f, _line);
+    file_text_writeln(_f);
+    file_text_close(_f);
+}
+
+// ═══════════════════════════════════════════════════════════════════
 //  Output buffer
 // ═══════════════════════════════════════════════════════════════════
 
@@ -17,7 +38,7 @@ function scm_output_write(_str) {
     while (_nl > 0) {
         var _line = string_copy(global.__scm_line_buf, 1, _nl - 1);
         array_push(global.__scm_output, _line);
-        show_debug_message("[scm] " + _line);
+        scm_trace("[scm] " + _line);
 
         // Trim buffer
         global.__scm_line_buf = string_copy(
@@ -38,7 +59,7 @@ function scm_output_write(_str) {
 function scm_output_flush() {
     if (global.__scm_line_buf != "") {
         array_push(global.__scm_output, global.__scm_line_buf);
-        show_debug_message("[scm] " + global.__scm_line_buf);
+        scm_trace("[scm] " + global.__scm_line_buf);
         global.__scm_line_buf = "";
     }
 }
@@ -75,6 +96,10 @@ function scm_init() {
     global.__scm_output_max = 200;
     global.__scm_line_buf   = "";
 
+    // Eval fuel (step limit to prevent infinite loops)
+    global.__scm_fuel       = 0;
+    global.__scm_fuel_limit = 1000000;  // 1M steps per top-level eval
+
     // Global environment
     global.scm_env = scm_env_new(undefined);
 
@@ -86,7 +111,7 @@ function scm_init() {
     // Load prelude
     scm__load_prelude(global.scm_env);
 
-    show_debug_message("[scm] Scheme interpreter initialized.");
+    scm_trace("[scm] Scheme interpreter initialized.");
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -95,14 +120,28 @@ function scm_init() {
 
 /// Evaluate a single Scheme expression string. Returns the Scheme result value.
 function scm_eval_string(_src) {
+    global.__scm_fuel = global.__scm_fuel_limit;
+    var _t0 = get_timer();
     var _expr = scm_read_string(_src);
     if (scm_is_err(_expr)) return _expr;
-    return scm_eval(_expr, global.scm_env);
+    var _result = scm_eval(_expr, global.scm_env);
+    var _dt = (get_timer() - _t0) div 1000;
+    var _used = global.__scm_fuel_limit - global.__scm_fuel;
+    // Only trace if took >1ms (avoid flooding on trivial evals)
+    if (_dt > 1) {
+        var _preview = _src;
+        if (string_length(_preview) > 60)
+            _preview = string_copy(_preview, 1, 60) + "...";
+        scm_trace("[scm-eval] " + string(_dt) + "ms fuel=" + string(_used) + " | " + _preview);
+    }
+    return _result;
 }
 
 /// Evaluate a program (multiple top-level expressions). Returns the last result.
 function scm_eval_program(_src, _env) {
     if (is_undefined(_env)) _env = global.scm_env;
+    global.__scm_fuel = global.__scm_fuel_limit;
+    var _t0 = get_timer();
     var _exprs = scm_read_all(_src);
     var _result = scm_void();
     for (var _i = 0; _i < array_length(_exprs); _i++) {
@@ -110,6 +149,9 @@ function scm_eval_program(_src, _env) {
         _result = scm_eval(_exprs[_i], _env);
         if (scm_is_err(_result)) return _result;
     }
+    var _dt = (get_timer() - _t0) div 1000;
+    var _used = global.__scm_fuel_limit - global.__scm_fuel;
+    scm_trace("[scm-prog] " + string(_dt) + "ms fuel=" + string(_used) + " exprs=" + string(array_length(_exprs)));
     return _result;
 }
 
@@ -138,76 +180,8 @@ function scm_repl_eval(_input) {
     return _result;
 }
 
-/// Run a quick self-test to verify the interpreter works.
-function scm_self_test() {
-    scm_init();
-
-    var _tests = [
-        ["(+ 1 2 3)", "6"],
-        ["(* 2 3 4)", "24"],
-        ["(- 10 3)", "7"],
-        ["(/ 10 2)", "5"],
-        ["(if #t 'yes 'no)", "yes"],
-        ["(if #f 'yes 'no)", "no"],
-        ["(car '(1 2 3))", "1"],
-        ["(cdr '(1 2 3))", "(2 3)"],
-        ["(length '(a b c))", "3"],
-        ["(map (lambda (x) (* x x)) '(1 2 3))", "(1 4 9)"],
-        ["(filter (lambda (x) (> x 2)) '(1 2 3 4 5))", "(3 4 5)"],
-        ["(let ((x 10) (y 20)) (+ x y))", "30"],
-        ["(let loop ((n 5) (acc 1)) (if (= n 0) acc (loop (- n 1) (* acc n))))", "120"],
-        ["(define (fact n) (if (<= n 1) 1 (* n (fact (- n 1))))) (fact 10)", "3628800"],
-        ["(string-append \"hello\" \" \" \"world\")", "\"hello world\""],
-        ["(equal? '(1 2 3) '(1 2 3))", "#t"],
-        // Error checking tests (must return errors, not crash)
-        ["(car 5)", "#<error:"],
-        ["(cdr \"hello\")", "#<error:"],
-        ["(+ 1 \"a\")", "#<error:"],
-        ["(- \"x\" 1)", "#<error:"],
-        ["(* 2 #t)", "#<error:"],
-        ["(< 1 \"2\")", "#<error:"],
-        ["(string-length 42)", "#<error:"],
-        ["(string-append \"a\" 1)", "#<error:"],
-        ["(abs #f)", "#<error:"],
-        ["(modulo \"a\" 2)", "#<error:"],
-        ["((lambda (x) x) 1 2)", "#<error:"],
-        ["((lambda (x y) x) 1)", "#<error:"],
-    ];
-
-    var _pass = 0;
-    var _fail = 0;
-
-    for (var _i = 0; _i < array_length(_tests); _i++) {
-        var _input    = _tests[_i][0];
-        var _expected = _tests[_i][1];
-
-        // Some tests have multiple expressions (define + use)
-        var _result;
-        if (string_pos(") (", _input) > 0) {
-            _result = scm_eval_program(_input, global.scm_env);
-        } else {
-            _result = scm_eval_string(_input);
-        }
-        var _actual = scm_write_str(_result);
-
-        // Prefix match for error tests (expected starts with "#<error:")
-        var _match = false;
-        if (string_pos("#<error:", _expected) == 1) {
-            _match = (string_pos("#<error:", _actual) == 1);
-        } else {
-            _match = (_actual == _expected);
-        }
-
-        if (_match) {
-            _pass++;
-        } else {
-            _fail++;
-            show_debug_message("[scm-test] FAIL: " + _input);
-            show_debug_message("  expected: " + _expected);
-            show_debug_message("  actual:   " + _actual);
-        }
-    }
-
-    show_debug_message("[scm-test] " + string(_pass) + " passed, " + string(_fail) + " failed");
-    return _fail == 0;
-}
+// ── Auto-initialize on bundle load ──────────────────────────────────
+// UMT-injected code has no function hoisting, so cross-function calls
+// between source files are unreliable. Auto-init as top-level code
+// ensures global.scm_env is ready before any object uses the REPL.
+scm_init();

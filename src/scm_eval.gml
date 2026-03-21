@@ -5,6 +5,29 @@
 /// we reassign _expr/_env and continue instead of recursing.
 /// Errors propagate as SCM_ERR values (no exceptions).
 
+/// Extract a human-readable message from a GML exception struct.
+/// GML exception = { message: "...", longMessage: "...", script: "...", stacktrace: [...] }
+/// If _e is a string (or anything else), just return string(_e).
+function scm__exception_msg(_e) {
+    if (is_struct(_e)) {
+        var _msg = "";
+        if (variable_struct_exists(_e, "message")) {
+            _msg = string(variable_struct_get(_e, "message"));
+        } else {
+            _msg = string(_e);
+        }
+        if (variable_struct_exists(_e, "script")) {
+            var _scr = string(variable_struct_get(_e, "script"));
+            // Strip verbose code-entry prefixes, keep just the function name
+            _scr = string_replace(_scr, "gml_Script_", "");
+            _scr = string_replace(_scr, "_scm_bundle", "");
+            _msg += "\n  in " + _scr;
+        }
+        return _msg;
+    }
+    return string(_e);
+}
+
 // ── Main evaluator (trampoline) ─────────────────────────────────────
 
 function scm_eval(_expr, _env) {
@@ -332,7 +355,7 @@ function scm_eval(_expr, _env) {
             try {
                 return _fn.fn(_args);
             } catch (_e) {
-                return scm_err(_fn.name + ": " + string(_e));
+                return scm_err(_fn.name + ": " + scm__exception_msg(_e));
             }
         }
 
@@ -340,7 +363,7 @@ function scm_eval(_expr, _env) {
             try {
                 return scm__call_gml_method(_fn.v, _args);
             } catch (_e) {
-                return scm_err("method call: " + string(_e));
+                return scm_err("method call: " + scm__exception_msg(_e));
             }
         }
 
@@ -355,7 +378,7 @@ function scm_apply(_fn, _args) {
         try {
             return _fn.fn(_args);
         } catch (_e) {
-            return scm_err(_fn.name + ": " + string(_e));
+            return scm_err(_fn.name + ": " + scm__exception_msg(_e));
         }
     }
     if (_fn.t == SCM_LAMBDA) {
@@ -368,14 +391,16 @@ function scm_apply(_fn, _args) {
         try {
             return scm__call_gml_method(_fn.v, _args);
         } catch (_e) {
-            return scm_err("method call: " + string(_e));
+            return scm_err("method call: " + scm__exception_msg(_e));
         }
     }
     return scm_err("not a procedure: " + scm_to_string(_fn));
 }
 
 // ── Call a GML method value with Scheme arguments ───────────────────
-// Uses script_execute_ext which accepts method references natively.
+// Uses script_execute with switch dispatch — script_execute_ext does NOT
+// work with method references in Stoneshard's GML runtime (it coerces
+// the method to a script index, calling the wrong function).
 
 function scm__call_gml_method(_gml_method, _scm_args) {
     var _gml_args = [];
@@ -384,7 +409,19 @@ function scm__call_gml_method(_gml_method, _scm_args) {
         array_push(_gml_args, scm_unwrap(_a.car));
         _a = _a.cdr;
     }
-    return scm_wrap(script_execute_ext(_gml_method, _gml_args));
+    var _n = array_length(_gml_args);
+    switch (_n) {
+        case 0:  return scm_wrap(_gml_method());
+        case 1:  return scm_wrap(_gml_method(_gml_args[0]));
+        case 2:  return scm_wrap(_gml_method(_gml_args[0], _gml_args[1]));
+        case 3:  return scm_wrap(_gml_method(_gml_args[0], _gml_args[1], _gml_args[2]));
+        case 4:  return scm_wrap(_gml_method(_gml_args[0], _gml_args[1], _gml_args[2], _gml_args[3]));
+        case 5:  return scm_wrap(_gml_method(_gml_args[0], _gml_args[1], _gml_args[2], _gml_args[3], _gml_args[4]));
+        case 6:  return scm_wrap(_gml_method(_gml_args[0], _gml_args[1], _gml_args[2], _gml_args[3], _gml_args[4], _gml_args[5]));
+        case 7:  return scm_wrap(_gml_method(_gml_args[0], _gml_args[1], _gml_args[2], _gml_args[3], _gml_args[4], _gml_args[5], _gml_args[6]));
+        case 8:  return scm_wrap(_gml_method(_gml_args[0], _gml_args[1], _gml_args[2], _gml_args[3], _gml_args[4], _gml_args[5], _gml_args[6], _gml_args[7]));
+        default: return scm_err("method call: too many arguments (" + string(_n) + ", max 8)");
+    }
 }
 
 // ── Evaluate a body (sequence of expressions) ───────────────────────
@@ -455,9 +492,14 @@ function scm__eval_define(_rest, _env) {
     var _first = _rest.car;
 
     if (_first.t == SCM_SYM) {
+        var _name_str = _first.v;
         var _val = scm_eval(scm_cadr(_rest), _env);
         if (_val.t == SCM_ERR) return _val;
-        scm_env_set(_env, _first.v, _val);
+        // Infer name for anonymous lambdas (first-define-wins)
+        if (_val.t == SCM_LAMBDA && _val.name == "<lambda>") {
+            _val.name = _name_str;
+        }
+        scm_env_set(_env, _name_str, _val);
         return scm_void();
     }
 

@@ -50,6 +50,20 @@ function scm_bi_debug_log(_args) {
     return scm_void();
 }
 
+/// (gml:script-execute script_index arg...) — variadic, call legacy script
+function scm_bi_script_execute(_args) {
+    if (_args.t != SCM_PAIR) return scm_err("gml:script-execute: expected at least 1 argument (script index)");
+    var _idx = scm_unwrap(_args.car);
+    _args = _args.cdr;
+    // Collect remaining args into a temporary array
+    var _arr = [];
+    while (_args.t == SCM_PAIR) {
+        array_push(_arr, scm_unwrap(_args.car));
+        _args = _args.cdr;
+    }
+    return scm_wrap(script_execute_ext(_idx, _arr));
+}
+
 /// (typeof val) — return type name as string
 function scm_bi_typeof(_args) {
     switch (_args.car.t) {
@@ -93,6 +107,32 @@ function scm_bi_is_method(_args)   { return scm_bool(_args.car.t == SCM_HANDLE &
 /// (make-struct) → empty GML struct {}
 function scm_bi_make_struct(_args) {
     return scm_handle({}, SCM_HT_STRUCT);
+}
+
+/// (array arg ...) → GML array from arguments (variadic)
+function scm_bi_array(_args) {
+    var _arr = [];
+    var _p = _args;
+    while (_p.t == SCM_PAIR) {
+        array_push(_arr, scm_unwrap(_p.car));
+        _p = _p.cdr;
+    }
+    return scm_handle(_arr, SCM_HT_ARRAY);
+}
+
+/// (struct key val ...) → GML struct from key-value pairs (variadic)
+function scm_bi_struct(_args) {
+    var _s = {};
+    var _p = _args;
+    while (_p.t == SCM_PAIR) {
+        var _k = scm_unwrap(_p.car);
+        _p = _p.cdr;
+        if (_p.t != SCM_PAIR) return scm_err("struct: odd number of arguments (missing value for key " + string(_k) + ")");
+        var _v = scm_unwrap(_p.car);
+        _p = _p.cdr;
+        variable_struct_set(_s, _k, _v);
+    }
+    return scm_handle(_s, SCM_HT_STRUCT);
 }
 
 /// (alist->struct alist) → GML struct from ((key . val) ...) pairs
@@ -139,6 +179,53 @@ function scm_bi_proc_to_method(_args) {
     return scm_handle(scm__proc_to_method(_proc), SCM_HT_METHOD);
 }
 
+// ═══════════════════════════════════════════════════════════════════
+//  Environment introspection
+// ═══════════════════════════════════════════════════════════════════
+
+/// (env-find pattern) → list of (name . type-string) for bindings containing pattern
+/// pattern is matched as substring (case-insensitive).
+function scm_bi_env_find(_args) {
+    var _pattern = scm_unwrap(_args.car);
+    var _pat_lower = string_lower(_pattern);
+    var _env = global.scm_env;
+    var _seen = ds_map_create();
+    var _result = scm_nil();
+
+    while (_env != undefined) {
+        var _keys = variable_struct_get_names(_env.bindings);
+        for (var _i = 0; _i < array_length(_keys); _i++) {
+            var _k = _keys[_i];
+            if (!ds_map_exists(_seen, _k)) {
+                ds_map_set(_seen, _k, true);
+                if (string_pos(_pat_lower, string_lower(_k)) > 0) {
+                    var _val = variable_struct_get(_env.bindings, _k);
+                    var _type_name;
+                    switch (_val.t) {
+                        case SCM_FN:     _type_name = "builtin"; break;
+                        case SCM_LAMBDA: _type_name = "lambda"; break;
+                        case SCM_NUM:    _type_name = "number"; break;
+                        case SCM_STR:    _type_name = "string"; break;
+                        case SCM_BOOL:   _type_name = "boolean"; break;
+                        case SCM_PAIR:   _type_name = "pair"; break;
+                        case SCM_NIL:    _type_name = "nil"; break;
+                        case SCM_HANDLE: _type_name = "handle"; break;
+                        default:         _type_name = "other"; break;
+                    }
+                    _result = scm_cons(
+                        scm_cons(scm_str(_k), scm_str(_type_name)),
+                        _result
+                    );
+                }
+            }
+        }
+        _env = _env.parent;
+    }
+    ds_map_destroy(_seen);
+    return _result;
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // ═══════════════════════════════════════════════════════════════════
 //  Self-test (smoke test for REPL)
 // ═══════════════════════════════════════════════════════════════════
@@ -226,6 +313,9 @@ function scm_register_bridge(_env) {
     scm_env_set(_env, "ds-list->list",     scm_fn("ds-list->list",     scm_bi_ds_list_to_list));
     scm_env_set(_env, "array->list",       scm_fn("array->list",       scm_bi_array_to_list));
 
+    // Script execution (variadic — not expressible in codegen)
+    scm_env_set(_env, "gml:script-execute", scm_fn("gml:script-execute", scm_bi_script_execute));
+
     // Utility
     scm_env_set(_env, "debug-log",         scm_fn("debug-log",         scm_bi_debug_log));
     scm_env_set(_env, "typeof",            scm_fn("typeof",            scm_bi_typeof));
@@ -238,7 +328,12 @@ function scm_register_bridge(_env) {
 
     // Struct construction
     scm_env_set(_env, "make-struct",       scm_fn("make-struct",       scm_bi_make_struct));
+    scm_env_set(_env, "array",             scm_fn("array",             scm_bi_array));
+    scm_env_set(_env, "struct",            scm_fn("struct",            scm_bi_struct));
     scm_env_set(_env, "alist->struct",     scm_fn("alist->struct",     scm_bi_alist_to_struct));
+
+    // Environment introspection
+    scm_env_set(_env, "env-find",          scm_fn("env-find",          scm_bi_env_find));
 
     // Deep conversion
     scm_env_set(_env, "list->array",       scm_fn("list->array",       scm_bi_list_to_array));

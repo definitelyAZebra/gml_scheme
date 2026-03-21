@@ -76,6 +76,7 @@ BUILTIN_SPEC: list[tuple[str, str, list[str] | None, str]] = [
     ("gml:variable-struct-set",         "variable_struct_set",       ["raw", "raw", "raw"], "void"),
     ("gml:variable-struct-exists",      "variable_struct_exists",    ["raw", "raw"], "bool"),
     ("gml:variable-struct-get-names",   "variable_struct_get_names", ["raw"], "wrap"),
+    ("gml:variable-instance-get-names", "variable_instance_get_names", ["raw"], "wrap"),
 
     # ── ds_map ───────────────────────────────────────────────────
     ("gml:ds-map-find-value",   "ds_map_find_value",    ["raw", "raw"], "wrap"),
@@ -101,7 +102,26 @@ BUILTIN_SPEC: list[tuple[str, str, list[str] | None, str]] = [
     ("gml:instance-find",       "instance_find",        ["raw", "raw"], "wrap"),
     ("gml:instance-number",     "instance_number",      ["raw"], "num"),
     ("gml:instance-exists",     "instance_exists",      ["raw"], "bool"),
+    ("gml:instance-create-depth", "instance_create_depth", ["num", "num", "num", "raw"], "wrap"),
+    ("gml:instance-destroy",    "instance_destroy",     ["raw"], "void"),
     ("gml:asset-get-index",     "asset_get_index",      ["raw"], "wrap"),
+    ("gml:asset-get-type",      "asset_get_type",       ["raw"], "str"),
+    ("gml:script-execute-ext",  "script_execute_ext",   ["raw", "raw"], "wrap"),
+    ("gml:script-exists",       "script_exists",        ["raw"], "bool"),
+    ("gml:script-get-name",     "script_get_name",      ["raw"], "str"),
+
+    # ── Object / sprite info ─────────────────────────────────────
+    ("gml:object-get-name",     "object_get_name",      ["raw"], "str"),
+    ("gml:object-get-sprite",   "object_get_sprite",    ["raw"], "num"),
+    ("gml:object-get-parent",   "object_get_parent",    ["raw"], "wrap"),
+    ("gml:object-is-ancestor",  "object_is_ancestor",   ["raw", "raw"], "bool"),
+    ("gml:object-exists",       "object_exists",        ["raw"], "bool"),
+    ("gml:sprite-get-name",     "sprite_get_name",      ["raw"], "str"),
+    ("gml:sprite-get-number",   "sprite_get_number",    ["raw"], "num"),
+    ("gml:sprite-get-width",    "sprite_get_width",     ["raw"], "num"),
+    ("gml:sprite-get-height",   "sprite_get_height",    ["raw"], "num"),
+    ("gml:sprite-exists",       "sprite_exists",        ["raw"], "bool"),
+    ("gml:room-exists",         "room_exists",          ["raw"], "bool"),
 
     # ── Array ────────────────────────────────────────────────────
     ("gml:array-length",        "array_length",         ["raw"], "num"),
@@ -145,8 +165,32 @@ BUILTIN_SPEC: list[tuple[str, str, list[str] | None, str]] = [
     # ── Expressions (0-arg, read-only GML state) ─────────────────
     ("gml:current-time",        "current_time",         None, "num"),
     ("gml:self",                "self.id",               None, "num"),
+    ("gml:global",              "global",               None, "wrap"),
     ("gml:room",                "room",                 None, "num"),
     ("gml:room-get-name",       "room_get_name",        ["raw"], "str"),
+    ("gml:room-width",          "room_width",           None, "num"),
+    ("gml:room-height",         "room_height",          None, "num"),
+    ("gml:room-goto",           "room_goto",            ["raw"], "void"),
+
+    # ── ds_grid ──────────────────────────────────────────────────
+    ("gml:ds-grid-create",      "ds_grid_create",       ["num", "num"], "num"),
+    ("gml:ds-grid-destroy",     "ds_grid_destroy",      ["raw"], "void"),
+    ("gml:ds-grid-get",         "ds_grid_get",          ["raw", "raw", "raw"], "wrap"),
+    ("gml:ds-grid-set",         "ds_grid_set",          ["raw", "raw", "raw", "raw"], "void"),
+    ("gml:ds-grid-width",       "ds_grid_width",        ["raw"], "num"),
+    ("gml:ds-grid-height",      "ds_grid_height",       ["raw"], "num"),
+
+    # ── Type checks ──────────────────────────────────────────────
+    ("gml:is-real",             "is_real",              ["raw"], "bool"),
+    ("gml:is-string",           "is_string",            ["raw"], "bool"),
+    ("gml:is-array",            "is_array",             ["raw"], "bool"),
+    ("gml:is-struct",           "is_struct",            ["raw"], "bool"),
+    ("gml:is-undefined",        "is_undefined",         ["raw"], "bool"),
+    ("gml:is-method",           "is_method",            ["raw"], "bool"),
+
+    # ── JSON ─────────────────────────────────────────────────────
+    ("gml:json-stringify",      "json_stringify",       ["raw"], "str"),
+    ("gml:json-parse",          "json_parse",           ["str"], "wrap"),
 
     # ── Method binding ────────────────────────────────────────────
     ("gml:method",              "method",               ["raw", "raw"], "wrap"),

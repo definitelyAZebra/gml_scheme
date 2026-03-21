@@ -24,7 +24,9 @@ SRC_ORDER = [
     "scm_core.gml",
     "scm_gml_builtins.gml",
     "scm_bridge.gml",
+    "scm_meta.gml",
     "scm_init.gml",
+    "scm_help.gml",
     "scm_tty.gml",
     "scm_repl_shell.gml",
 ]
@@ -134,10 +136,11 @@ def generate_stubs(bundle_path: Path, stubs_path: Path) -> None:
 
 
 def copy_build_assets(project_root: Path, build_dir: Path) -> None:
-    """Copy installer script and font to build/ for a self-contained output."""
+    """Copy installer script, fonts, and data files to build/ for deployment."""
     assets = [
         project_root / "scripts" / "InstallScmReplStub.csx",
         project_root / "monof55.ttf",
+        project_root / "HanyiSentyYongleEncyclopedia-2020.ttf",
     ]
     for src in assets:
         if src.exists():
@@ -146,6 +149,38 @@ def copy_build_assets(project_root: Path, build_dir: Path) -> None:
             print(f"Copied {src.name} → {dst}")
         else:
             print(f"WARNING: {src} not found, skipping")
+
+    # Copy data JSON files into build/scm_data/ for runtime loading
+    scm_data_dir = build_dir / "scm_data"
+    scm_data_dir.mkdir(parents=True, exist_ok=True)
+
+    meta_dir = project_root / "data" / "meta"
+    trie_dir = project_root / "data" / "trie"
+
+    copied = 0
+
+    # Meta JSON files (original names from ExportMeta)
+    meta_files = [
+        "objects.json", "sprites.json", "sounds.json",
+        "rooms.json", "scripts.json", "functions.json",
+        "obj_tree.json",
+    ]
+    for name in meta_files:
+        src = meta_dir / name
+        if src.exists():
+            shutil.copy2(src, scm_data_dir / name)
+            copied += 1
+
+    # Trie JSON files
+    if trie_dir.exists():
+        for src in sorted(trie_dir.glob("trie_*.json")):
+            shutil.copy2(src, scm_data_dir / src.name)
+            copied += 1
+
+    if copied:
+        print(f"Copied {copied} data files → {scm_data_dir}")
+    else:
+        print(f"WARNING: No data files found in {meta_dir} or {trie_dir}")
 
 
 def main() -> None:

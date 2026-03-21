@@ -17,14 +17,14 @@ function scm_display_str(_v) {
         case SCM_STR:    return _v.v;
         case SCM_SYM:    return _v.v;
         case SCM_PAIR:   return scm__print_list(_v, false);
-        case SCM_FN:     return "#<builtin:" + _v.name + ">";
-        case SCM_LAMBDA: return "#<lambda:" + _v.name + ">";
+        case SCM_FN:     return "#<procedure:" + _v.name + ">";
+        case SCM_LAMBDA: return "#<procedure:" + _v.name + ">";
         case SCM_VOID:   return "#<void>";
         case SCM_ERR:    return "#<error: " + _v.v + ">";
         case SCM_HANDLE:
             switch (_v.ht) {
-                case SCM_HT_ARRAY:    return "#<array:" + string(array_length(_v.v)) + ">";
-                case SCM_HT_STRUCT:   return "#<struct>";
+                case SCM_HT_ARRAY:    return scm__print_array(_v.v, false);
+                case SCM_HT_STRUCT:   return scm__print_struct(_v.v, false);
                 case SCM_HT_METHOD:   return "#<method>";
                 default:              return "#<handle:" + string(_v.v) + ">";
             }
@@ -97,5 +97,52 @@ function scm__print_list(_v, _write_mode) {
     array_push(_buf, ")");
     var _s = "";
     for (var _i = 0; _i < array_length(_buf); _i++) _s += _buf[_i];
+    return _s;
+}
+
+/// Print a GML array as #[elem1 elem2 ...].
+/// Elements are wrapped via scm_wrap before printing.
+/// Truncates after 20 elements.
+function scm__print_array(_arr, _write_mode) {
+    var _len = array_length(_arr);
+    var _max = 20;
+    var _buf = ["#["];
+    var _limit = min(_len, _max);
+    for (var _i = 0; _i < _limit; _i++) {
+        if (_i > 0) array_push(_buf, " ");
+        var _elem = scm_wrap(_arr[_i]);
+        array_push(_buf, _write_mode ? scm_write_str(_elem) : scm_display_str(_elem));
+    }
+    if (_len > _max) {
+        array_push(_buf, " ..." + string(_len - _max) + " more");
+    }
+    array_push(_buf, "]");
+    var _s = "";
+    for (var _j = 0; _j < array_length(_buf); _j++) _s += _buf[_j];
+    return _s;
+}
+
+/// Print a GML struct as #{key1 val1 key2 val2 ...}.
+/// Values are wrapped via scm_wrap before printing.
+/// Truncates after 10 fields.
+function scm__print_struct(_st, _write_mode) {
+    var _names = variable_struct_get_names(_st);
+    var _len = array_length(_names);
+    var _max = 10;
+    var _buf = ["#{"];
+    var _limit = min(_len, _max);
+    for (var _i = 0; _i < _limit; _i++) {
+        var _k = _names[_i];
+        var _raw = variable_struct_get(_st, _k);
+        var _val = scm__is_tagged(_raw) ? _raw : scm_wrap(_raw);
+        array_push(_buf, " " + _k + " ");
+        array_push(_buf, _write_mode ? scm_write_str(_val) : scm_display_str(_val));
+    }
+    if (_len > _max) {
+        array_push(_buf, " ..." + string(_len - _max) + " more");
+    }
+    array_push(_buf, "}");
+    var _s = "";
+    for (var _j = 0; _j < array_length(_buf); _j++) _s += _buf[_j];
     return _s;
 }

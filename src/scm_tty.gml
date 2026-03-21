@@ -17,8 +17,10 @@
 
 /// Initialize the TTY layer with a monospace font resource.
 /// Must be called after font_add and before any other scm_tty_* call.
-function scm_tty_init(_font) {
+/// _font_cjk: fallback font for CJK characters, or -1 if unavailable.
+function scm_tty_init(_font, _font_cjk) {
     global.__tty_font = _font;
+    global.__tty_font_cjk = _font_cjk;
 
     // Cache font metrics (monospace assumption)
     draw_set_font(_font);
@@ -200,11 +202,11 @@ function scm_tty_key_tick(_vk) {
     var _since_press = _now - _pressed_at;
     var _since_fire  = _now - _last_fire;
 
-    // Initial delay: 400ms from first press before any repeat
-    if (_since_press < 400) return false;
+    // Initial delay: 250ms from first press before any repeat
+    if (_since_press < 250) return false;
 
-    // After initial delay: repeat every 35ms
-    if (_since_fire >= 35) {
+    // After initial delay: repeat every 30ms
+    if (_since_fire >= 30) {
         ds_map_set(global.__tty_key_fired, _vk, _now);
         return true;
     }
@@ -220,9 +222,59 @@ function scm_tty_reset_keys() {
 
 // ─── Rendering ──────────────────────────────────────────────────
 
-/// Draw colored text (uniform color, 4 corners).
+/// Draw colored text with font fallback for non-ASCII (CJK) characters.
+/// Returns total pixel width drawn (for callers that need to advance X).
 function scm_tty_draw_text(_x, _y, _text, _color, _alpha) {
-    draw_text_colour(_x, _y, _text, _color, _color, _color, _color, _alpha);
+    var _len = string_length(_text);
+    if (_len == 0) return 0;
+
+    // Fast path: no fallback font — draw everything with primary
+    if (global.__tty_font_cjk == -1) {
+        draw_text_colour(_x, _y, _text, _color, _color, _color, _color, _alpha);
+        return string_width(_text);
+    }
+
+    // Quick scan: any non-ASCII?
+    var _has_cjk = false;
+    for (var _i = 1; _i <= _len; _i++) {
+        if (ord(string_char_at(_text, _i)) > 127) {
+            _has_cjk = true;
+            break;
+        }
+    }
+
+    // Fast path: pure ASCII
+    if (!_has_cjk) {
+        draw_text_colour(_x, _y, _text, _color, _color, _color, _color, _alpha);
+        return string_width(_text);
+    }
+
+    // Mixed: split into ASCII vs non-ASCII runs, draw each with its font
+    var _xx = _x;
+    var _run_start = 1;
+    var _in_cjk = (ord(string_char_at(_text, 1)) > 127);
+
+    for (var _i = 2; _i <= _len; _i++) {
+        var _ch_cjk = (ord(string_char_at(_text, _i)) > 127);
+        if (_ch_cjk != _in_cjk) {
+            var _run = string_copy(_text, _run_start, _i - _run_start);
+            draw_set_font(_in_cjk ? global.__tty_font_cjk : global.__tty_font);
+            draw_text_colour(_xx, _y, _run, _color, _color, _color, _color, _alpha);
+            _xx += string_width(_run);
+            _run_start = _i;
+            _in_cjk = _ch_cjk;
+        }
+    }
+
+    // Flush final run
+    var _run = string_copy(_text, _run_start, _len - _run_start + 1);
+    draw_set_font(_in_cjk ? global.__tty_font_cjk : global.__tty_font);
+    draw_text_colour(_xx, _y, _run, _color, _color, _color, _color, _alpha);
+    _xx += string_width(_run);
+
+    // Restore primary font
+    draw_set_font(global.__tty_font);
+    return _xx - _x;
 }
 
 /// Draw the output buffer with text wrapping and scroll support.
@@ -275,8 +327,7 @@ function scm_tty_draw_output(_x0, _y_bottom, _max_w, _max_h) {
                 var _xx = _x0;
                 var _sn = array_length(_spans);
                 for (var _j = 0; _j < _sn; _j++) {
-                    scm_tty_draw_text(_xx, _y, _spans[_j][1], _spans[_j][0], 0.9);
-                    _xx += string_width(_spans[_j][1]);
+                    _xx += scm_tty_draw_text(_xx, _y, _spans[_j][1], _spans[_j][0], 0.9);
                 }
                 _y -= _lh;
                 if (_y < _y_top) return;

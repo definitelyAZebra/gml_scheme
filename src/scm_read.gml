@@ -102,15 +102,66 @@ function scm__reader_read_string(_r) {
     return scm__reader_err(_r, "unterminated string");
 }
 
-/// Read a # literal (#t, #f).
+/// Read a # literal (#t, #f, #[...], #{...}).
 function scm__reader_read_hash(_r) {
     scm__reader_advance(_r);  // skip '#'
     if (_r.pos >= _r.len) return scm__reader_err(_r, "unexpected end after #");
-    var _ch = scm__reader_advance(_r);
+    var _ch = scm__reader_peek(_r);
+
     switch (_ch) {
-        case "t": return scm_bool(true);
-        case "f": return scm_bool(false);
+        case "t": scm__reader_advance(_r); return scm_bool(true);
+        case "f": scm__reader_advance(_r); return scm_bool(false);
+        case "[": return scm__reader_read_vector(_r);
+        case "{": return scm__reader_read_hash_table(_r);
         default:  return scm__reader_err(_r, "unknown # syntax: #" + _ch);
+    }
+}
+
+/// Read #[expr ...] → (array expr ...)
+function scm__reader_read_vector(_r) {
+    scm__reader_advance(_r);  // skip '['
+    scm__reader_skip_ws(_r);
+
+    // Build (array item1 item2 ...)
+    var _head = scm_cons(scm_sym("array"), scm_nil());
+    var _tail = _head;
+
+    while (true) {
+        scm__reader_skip_ws(_r);
+        if (_r.pos >= _r.len) return scm__reader_err(_r, "unterminated #[");
+        if (scm__reader_peek(_r) == "]") {
+            scm__reader_advance(_r);
+            return _head;
+        }
+        var _item = scm_reader_read(_r);
+        if (scm_is_err(_item)) return _item;
+        var _new = scm_cons(_item, scm_nil());
+        scm_set_cdr(_tail, _new);
+        _tail = _new;
+    }
+}
+
+/// Read #{key val ...} → (struct key val ...)
+function scm__reader_read_hash_table(_r) {
+    scm__reader_advance(_r);  // skip '{'
+    scm__reader_skip_ws(_r);
+
+    // Build (struct k1 v1 k2 v2 ...)
+    var _head = scm_cons(scm_sym("struct"), scm_nil());
+    var _tail = _head;
+
+    while (true) {
+        scm__reader_skip_ws(_r);
+        if (_r.pos >= _r.len) return scm__reader_err(_r, "unterminated #{");
+        if (scm__reader_peek(_r) == "}") {
+            scm__reader_advance(_r);
+            return _head;
+        }
+        var _item = scm_reader_read(_r);
+        if (scm_is_err(_item)) return _item;
+        var _new = scm_cons(_item, scm_nil());
+        scm_set_cdr(_tail, _new);
+        _tail = _new;
     }
 }
 
@@ -123,7 +174,8 @@ function scm__reader_read_atom(_r) {
         var _ch = string_char_at(_r.src, _r.pos + 1);
         if (_ch == " "  || _ch == "\n" || _ch == "\r" || _ch == "\t" ||
             _ch == "("  || _ch == ")"  || _ch == "\"" || _ch == ";" ||
-            _ch == "'"  || _ch == "`"  || _ch == ",") {
+            _ch == "'"  || _ch == "`"  || _ch == "," ||
+            _ch == "["  || _ch == "]"  || _ch == "{"  || _ch == "}") {
             break;
         }
         _r.pos++;
@@ -166,6 +218,29 @@ function scm__reader_read_atom(_r) {
     if (_is_num && _has_digit) {
         return scm_num(real(_s));
     }
+
+    // ── Namespace prefix desugar ────────────────────────────────
+    // obj:name / spr:name / snd:name / rm:name / scr:name → (gml:asset-get-index "name")
+    // fn:name  / g:name                                    → (gml:variable-global-get "name")
+    var _colon = string_pos(":", _s);
+    if (_colon > 1 && _colon < _atom_len) {
+        var _ns = string_copy(_s, 1, _colon - 1);
+        var _id = string_copy(_s, _colon + 1, _atom_len - _colon);
+        switch (_ns) {
+            case "obj":
+            case "spr":
+            case "snd":
+            case "rm":
+            case "scr":
+                return scm_cons(scm_sym("gml:asset-get-index"),
+                           scm_cons(scm_str(_id), scm_nil()));
+            case "fn":
+            case "g":
+                return scm_cons(scm_sym("gml:variable-global-get"),
+                           scm_cons(scm_str(_id), scm_nil()));
+        }
+    }
+
     return scm_sym(_s);
 }
 

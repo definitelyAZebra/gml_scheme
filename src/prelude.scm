@@ -260,6 +260,23 @@
 (define (struct->alist s)
   (map (lambda (k) (cons k (gml:variable-struct-get s k))) (struct-keys s)))
 
+;; (inspect obj) — print all fields of a struct or instance
+;; For instances: uses variable_instance_get; for structs: uses variable_struct_get.
+(define (inspect obj)
+  (let ((keys (if (struct? obj)
+                  (struct-keys obj)
+                  (instance-keys obj)))
+        (getter (if (struct? obj)
+                    gml:variable-struct-get
+                    gml:variable-instance-get)))
+    (for-each
+      (lambda (k)
+        (display "  ")
+        (display k)
+        (display ": ")
+        (displayln (getter obj k)))
+      keys)))
+
 ;; (alist->ds-map alist) → new ds_map (caller must destroy!)
 (define (alist->ds-map alist)
   (let ((m (gml:ds-map-create)))
@@ -279,6 +296,8 @@
 (define instance-get     gml:variable-instance-get)
 (define instance-set!    gml:variable-instance-set)
 (define instance-exists? gml:instance-exists)
+(define (instance-keys id)
+  (array->list (gml:variable-instance-get-names id)))
 
 ; Global variable access
 (define global-get  gml:variable-global-get)
@@ -298,3 +317,58 @@
 (define array-set!    gml:array-set)
 (define array-length  gml:array-length)
 (define array-create  gml:array-create)
+
+; ── Asset discovery ──────────────────────────────────────────
+; *xxx* handles → GML arrays populated by scm_meta_init().
+; One boxing layer only (SCM_HANDLE wrapping GML array).
+; Tab completion also reads these globals directly from GML.
+
+(define *objects*   (global-get "__scm_meta_objects"))
+(define *sprites*   (global-get "__scm_meta_sprites"))
+(define *sounds*    (global-get "__scm_meta_sounds"))
+(define *rooms*     (global-get "__scm_meta_rooms"))
+(define *scripts*   (global-get "__scm_meta_scripts"))
+(define *functions* (global-get "__scm_meta_functions"))
+(define *obj-tree*  (global-get "__scm_meta_obj_tree"))
+
+;; (search-names arr pattern) → list of matching strings
+;; Linear scan with case-insensitive substring match.
+(define (search-names arr pat)
+  (let ((n (array-length arr))
+        (p (gml:string-lower pat)))
+    (let loop ((i 0) (acc '()))
+      (if (= i n) (reverse acc)
+        (let ((name (array-ref arr i)))
+          (if (> (gml:string-pos p (gml:string-lower name)) 0)
+            (loop (+ i 1) (cons name acc))
+            (loop (+ i 1) acc)))))))
+
+;; Search by category
+(define (objects pat)   (search-names *objects* pat))
+(define (sprites pat)   (search-names *sprites* pat))
+(define (sounds pat)    (search-names *sounds* pat))
+(define (rooms pat)     (search-names *rooms* pat))
+(define (scripts pat)   (search-names *scripts* pat))
+(define (functions pat) (search-names *functions* pat))
+
+;; (object-children name) → list of child names (static struct tree)
+(define (object-children name)
+  (if (gml:variable-struct-exists *obj-tree* name)
+    (array->list (gml:variable-struct-get *obj-tree* name))
+    '()))
+
+;; (object-parent name-or-idx) → parent name or #f (runtime GML)
+(define (object-parent name-or-idx)
+  (let* ((idx (if (string? name-or-idx)
+                  (gml:asset-get-index name-or-idx) name-or-idx))
+         (p (gml:object-get-parent idx)))
+    (if (< p 0) #f (gml:object-get-name p))))
+
+;; (object-ancestors name-or-idx) → ancestor names list (nearest → root)
+(define (object-ancestors name-or-idx)
+  (let ((idx (if (string? name-or-idx)
+                 (gml:asset-get-index name-or-idx) name-or-idx)))
+    (let loop ((i (gml:object-get-parent idx)) (acc '()))
+      (if (< i 0) (reverse acc)
+        (loop (gml:object-get-parent i)
+              (cons (gml:object-get-name i) acc))))))

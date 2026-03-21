@@ -31,6 +31,7 @@ string scriptDir  = Path.GetDirectoryName(ScriptPath);
 string bundlePath = Path.Combine(scriptDir, "scm_bundle.gml");
 string stubsPath  = Path.Combine(scriptDir, "scm_stubs.gml");
 string fontPath   = Path.Combine(scriptDir, "monof55.ttf");
+string cjkFontPath = Path.Combine(scriptDir, "HanyiSentyYongleEncyclopedia-2020.ttf");
 
 // ── Constants ───────────────────────────────────────────────────────────
 
@@ -180,34 +181,84 @@ ScriptMessage("Phase 3: Game object + events + init imported.");
 // ═════════════════════════════════════════════════════════════════════════
 
 // ═════════════════════════════════════════════════════════════════════════
-// Phase 4 — Copy font to game directory
+// Phase 4 — Copy fonts to game directory
 // ═════════════════════════════════════════════════════════════════════════
 //
 // font_add() in GML looks for files relative to the game's working
-// directory (same folder as data.win).  We simply copy the .ttf there.
+// directory (same folder as data.win).  We copy both .ttf files there.
 
-const string FONT_FILENAME = "monof55.ttf";
+string gameDir = Path.GetDirectoryName(FilePath);
 bool fontCopied = false;
+bool cjkFontCopied = false;
 
+// ASCII monospace font
 if (File.Exists(fontPath))
 {
-    string gameDir  = Path.GetDirectoryName(FilePath);
-    string destPath = Path.Combine(gameDir, FONT_FILENAME);
-
+    string destPath = Path.Combine(gameDir, "monof55.ttf");
     if (!File.Exists(destPath))
     {
         File.Copy(fontPath, destPath);
         fontCopied = true;
-        ScriptMessage($"Phase 4: Copied '{FONT_FILENAME}' → {destPath}");
+        ScriptMessage($"Phase 4: Copied monof55.ttf → {destPath}");
     }
     else
     {
-        ScriptMessage($"Phase 4: '{FONT_FILENAME}' already exists in game directory, skipped.");
+        ScriptMessage("Phase 4: monof55.ttf already exists in game directory, skipped.");
     }
 }
 else
 {
-    ScriptMessage($"Phase 4: Font file not found at {fontPath}, skipping.");
+    ScriptMessage($"Phase 4: monof55.ttf not found at {fontPath}, skipping.");
+}
+
+// CJK fallback font
+if (File.Exists(cjkFontPath))
+{
+    string destPath = Path.Combine(gameDir, "HanyiSentyYongleEncyclopedia-2020.ttf");
+    if (!File.Exists(destPath))
+    {
+        File.Copy(cjkFontPath, destPath);
+        cjkFontCopied = true;
+        ScriptMessage($"Phase 4: Copied CJK font → {destPath}");
+    }
+    else
+    {
+        ScriptMessage("Phase 4: CJK font already exists in game directory, skipped.");
+    }
+}
+else
+{
+    ScriptMessage($"Phase 4: CJK font not found at {cjkFontPath}, skipping.");
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// Phase 5 — Copy data files (metadata + tries) to game directory
+// ═════════════════════════════════════════════════════════════════════════
+//
+// scm_meta_init() loads JSON files via buffer_load("scm_data/...").
+// We copy the scm_data/ folder next to data.win.
+
+string srcDataDir  = Path.Combine(scriptDir, "scm_data");
+string destDataDir = Path.Combine(gameDir, "scm_data");
+int dataCopied = 0;
+
+if (Directory.Exists(srcDataDir))
+{
+    Directory.CreateDirectory(destDataDir);
+
+    foreach (string srcFile in Directory.GetFiles(srcDataDir, "*.json"))
+    {
+        string fileName = Path.GetFileName(srcFile);
+        string destFile = Path.Combine(destDataDir, fileName);
+        File.Copy(srcFile, destFile, overwrite: true);
+        dataCopied++;
+    }
+
+    ScriptMessage($"Phase 5: Copied {dataCopied} data files → {destDataDir}");
+}
+else
+{
+    ScriptMessage($"Phase 5: scm_data/ not found at {srcDataDir}, skipping. Tab completion will not work.");
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -220,7 +271,8 @@ string report =
     $"  Bundle:    {BUNDLE_NAME} ({realChildCount} child entries)\n" +
     $"  Object:    {OBJ_NAME} (Create / Step / Draw GUI / KeyPress F1 / Destroy)\n" +
     $"  Init:      {(needsInjection ? "injected" : "already present")}\n" +
-    $"  Font:      {(fontCopied ? "copied to game dir" : "already present or skipped")}\n\n" +
+    $"  Font:      {(fontCopied ? "copied" : "already present or skipped")}\n" +
+    $"  CJK Font:  {(cjkFontCopied ? "copied" : "already present or skipped")}\n\n" +
     "Remember to save the data file!";
 
 ScriptMessage(report);

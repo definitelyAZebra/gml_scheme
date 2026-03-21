@@ -108,6 +108,9 @@ function scm_init() {
     scm_register_gml_builtins(global.scm_env);
     scm_register_bridge(global.scm_env);
 
+    // Load asset metadata (objects, sprites, etc.)
+    scm_meta_init();
+
     // Load prelude
     scm__load_prelude(global.scm_env);
 

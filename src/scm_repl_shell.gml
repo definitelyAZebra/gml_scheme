@@ -39,6 +39,56 @@ function scm_repl__str_delete_at(_base, _pos) {
     return string_delete(_base, _pos + 1, 1);
 }
 
+/// Split a string by a one-character separator.  Returns an array of parts.
+function scm_repl__string_split_char(_s, _sep) {
+    var _res = [];
+    var _cur = "";
+    var _len = string_length(_s);
+    for (var _i = 1; _i <= _len; _i++) {
+        var _ch = string_char_at(_s, _i);
+        if (_ch == _sep) {
+            array_push(_res, _cur);
+            _cur = "";
+        } else {
+            _cur += _ch;
+        }
+    }
+    array_push(_res, _cur);
+    return _res;
+}
+
+/// East-Asian display width: CJK ideographs count as 2 columns, rest as 1.
+/// Used for cursor positioning on the monospace input line.
+function scm_repl__display_width(_s) {
+    var _w = 0;
+    var _len = string_length(_s);
+    for (var _i = 1; _i <= _len; _i++) {
+        var _code = ord(string_char_at(_s, _i));
+        // CJK Unified Ideographs (U+4E00..U+9FFF) → fullwidth
+        if (_code >= 0x4E00 && _code <= 0x9FFF) {
+            _w += 2;
+        } else {
+            _w += 1;
+        }
+    }
+    return _w;
+}
+
+/// Display width of the first _n characters of a string.
+function scm_repl__display_width_n(_s, _n) {
+    var _w = 0;
+    var _len = min(_n, string_length(_s));
+    for (var _i = 1; _i <= _len; _i++) {
+        var _code = ord(string_char_at(_s, _i));
+        if (_code >= 0x4E00 && _code <= 0x9FFF) {
+            _w += 2;
+        } else {
+            _w += 1;
+        }
+    }
+    return _w;
+}
+
 // ═══════════════════════════════════════════════════════════════════
 //  Section 2: Delimiter / number detection
 // ═══════════════════════════════════════════════════════════════════
@@ -48,6 +98,7 @@ function scm_repl__is_delimiter(_ch) {
     if (_ch == "") return true;
     if (_ch == " " || _ch == "\t" || _ch == "\n" || _ch == "\r") return true;
     if (_ch == "(" || _ch == ")") return true;
+    if (_ch == "[" || _ch == "]" || _ch == "{" || _ch == "}") return true;
     if (_ch == "\"" || _ch == ";") return true;
     if (_ch == "'" || _ch == "`" || _ch == ",") return true;
     return false;
@@ -97,6 +148,14 @@ function scm_repl__is_number(_s) {
 #macro RTOK_KEYWORD     8
 #macro RTOK_BUILTIN     9
 #macro RTOK_SYMBOL      10
+
+/// Check if a symbol name refers to a procedure (builtin or lambda) in the env.
+function scm_repl__is_procedure(_name) {
+    if (!variable_global_exists("scm_env")) return false;
+    var _val = scm_env_get(global.scm_env, _name);
+    if (_val == undefined) return false;
+    return (_val.t == SCM_FN || _val.t == SCM_LAMBDA);
+}
 
 /// Tokenize a source string.
 /// Returns array of [type, text] pairs.
@@ -170,6 +229,17 @@ function scm_repl__tokenize(_src) {
             _pos++;
             continue;
         }
+        // Brackets (close only — #[ and #{ open via # handler)
+        if (_ch == "]") {
+            array_push(_tokens, [RTOK_RPAREN, "]"]);
+            _pos++;
+            continue;
+        }
+        if (_ch == "}") {
+            array_push(_tokens, [RTOK_RPAREN, "}"]);
+            _pos++;
+            continue;
+        }
 
         // Quote sugar
         if (_ch == "'") {
@@ -193,12 +263,22 @@ function scm_repl__tokenize(_src) {
             continue;
         }
 
-        // Hash literals (#t, #f)
+        // Hash literals (#t, #f, #[, #{)
         if (_ch == "#") {
             if (_pos + 1 < _len) {
                 var _next = string_char_at(_src, _pos + 2);
                 if (_next == "t" || _next == "f") {
                     array_push(_tokens, [RTOK_BOOLEAN, "#" + _next]);
+                    _pos += 2;
+                    continue;
+                }
+                if (_next == "[") {
+                    array_push(_tokens, [RTOK_LPAREN, "#["]);
+                    _pos += 2;
+                    continue;
+                }
+                if (_next == "{") {
+                    array_push(_tokens, [RTOK_LPAREN, "#{"]);
                     _pos += 2;
                     continue;
                 }
@@ -219,7 +299,7 @@ function scm_repl__tokenize(_src) {
             _type = RTOK_NUMBER;
         } else if (ds_map_exists(global.__repl_keywords, _text)) {
             _type = RTOK_KEYWORD;
-        } else if (ds_map_exists(global.__repl_builtins, _text)) {
+        } else if (scm_repl__is_procedure(_text)) {
             _type = RTOK_BUILTIN;
         } else {
             _type = RTOK_SYMBOL;
@@ -260,8 +340,8 @@ function scm_repl__paren_depth(_src) {
 
         if (_ch == ";") { _in_comment = true; continue; }
         if (_ch == "\"") { _in_string = true; continue; }
-        if (_ch == "(") { _depth++; continue; }
-        if (_ch == ")") { _depth--; continue; }
+        if (_ch == "(" || _ch == "[" || _ch == "{") { _depth++; continue; }
+        if (_ch == ")" || _ch == "]" || _ch == "}") { _depth--; continue; }
     }
     return _depth;
 }
@@ -336,16 +416,18 @@ function scm_repl__match_paren(_src, _cursor_pos) {
     if (_cursor_pos < 0 || _cursor_pos >= _len) return -1;
 
     var _ch = string_char_at(_src, _cursor_pos + 1);
-    if (_ch == "(") return scm_repl__find_close(_src, _cursor_pos + 1, 1);
-    if (_ch == ")") return scm_repl__find_open(_src, _cursor_pos - 1, 1);
+    if (_ch == "(" || _ch == "[" || _ch == "{") return scm_repl__find_close(_src, _cursor_pos + 1, 1, _ch);
+    if (_ch == ")" || _ch == "]" || _ch == "}") return scm_repl__find_open(_src, _cursor_pos - 1, 1, _ch);
     return -1;
 }
 
-/// Find closing paren (scan forward). 0-based positions.
-function scm_repl__find_close(_src, _pos, _depth) {
+/// Find closing bracket (scan forward). 0-based positions.
+/// _open_ch is the opening bracket char to determine the matching close.
+function scm_repl__find_close(_src, _pos, _depth, _open_ch) {
     var _len = string_length(_src);
     var _in_str = false;
     var _escaped = false;
+    var _close_ch = (_open_ch == "(") ? ")" : ((_open_ch == "[") ? "]" : "}");
 
     while (_pos < _len) {
         var _ch = string_char_at(_src, _pos + 1);
@@ -355,8 +437,8 @@ function scm_repl__find_close(_src, _pos, _depth) {
             else if (_ch == "\"") { _in_str = false; }
         } else {
             if (_ch == "\"") { _in_str = true; }
-            else if (_ch == "(") { _depth++; }
-            else if (_ch == ")") {
+            else if (_ch == _open_ch) { _depth++; }
+            else if (_ch == _close_ch) {
                 _depth--;
                 if (_depth == 0) return _pos;
             }
@@ -366,18 +448,50 @@ function scm_repl__find_close(_src, _pos, _depth) {
     return -1;
 }
 
-/// Find opening paren (scan backward). 0-based positions.
-function scm_repl__find_open(_src, _pos, _depth) {
+/// Find opening bracket (scan backward). 0-based positions.
+/// Skips strings and comments correctly.
+/// _close_ch is the closing bracket char to determine the matching open.
+function scm_repl__find_open(_src, _pos, _depth, _close_ch) {
+    var _open_ch = (_close_ch == ")") ? "(" : ((_close_ch == "]") ? "[" : "{");
     while (_pos >= 0) {
         var _ch = string_char_at(_src, _pos + 1);
-        if (_ch == ")") { _depth++; }
-        else if (_ch == "(") {
-            _depth--;
-            if (_depth == 0) return _pos;
+
+        if (_ch == _close_ch || _ch == _open_ch) {
+            if (!scm_repl__pos_in_string(_src, _pos)) {
+                if (_ch == _close_ch) { _depth++; }
+                else {
+                    _depth--;
+                    if (_depth == 0) return _pos;
+                }
+            }
         }
         _pos--;
     }
     return -1;
+}
+
+/// Check if position _pos (0-based) in _src is inside a string literal.
+/// Scans from the start, tracking string/comment/escape state.
+function scm_repl__pos_in_string(_src, _pos) {
+    var _in_str = false;
+    var _in_comment = false;
+    var _escaped = false;
+    for (var _i = 0; _i < _pos; _i++) {
+        var _ch = string_char_at(_src, _i + 1);
+        if (_in_comment) {
+            if (_ch == "\n") _in_comment = false;
+            continue;
+        }
+        if (_in_str) {
+            if (_escaped) { _escaped = false; continue; }
+            if (_ch == "\\") { _escaped = true; continue; }
+            if (_ch == "\"") { _in_str = false; }
+            continue;
+        }
+        if (_ch == ";") { _in_comment = true; continue; }
+        if (_ch == "\"") { _in_str = true; }
+    }
+    return _in_str;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -564,6 +678,7 @@ function scm_repl__reset_input() {
     global.__repl_line_idx = 0;
     global.__repl_buf = "";
     global.__repl_cursor = 0;
+    global.__repl_hist_idx = -1;
 }
 
 /// Check if currently in multi-line editing mode (more than 1 line).
@@ -593,11 +708,11 @@ function scm_repl__set_lines_from_string(_str) {
 /// Type characters into the buffer at cursor.
 /// Filters out non-printable-ASCII characters (e.g. CJK from IME switching).
 function scm_repl__type_chars(_str) {
-    // Only allow printable ASCII (0x20 space .. 0x7E tilde)
+    // Allow printable characters: ASCII (0x20..0x7E) + non-ASCII (>= 0x80)
     var _filtered = "";
     for (var _i = 1; _i <= string_length(_str); _i++) {
         var _code = ord(string_char_at(_str, _i));
-        if (_code >= 0x20 && _code <= 0x7E) {
+        if ((_code >= 0x20 && _code <= 0x7E) || _code >= 0x80) {
             _filtered += string_char_at(_str, _i);
         }
     }
@@ -742,9 +857,10 @@ function scm_repl__key(_which) {
 function scm_repl__check_key(_which) {
     var _vk;
     switch (_which) {
-        case "left":  _vk = vk_left;      break;
-        case "right": _vk = vk_right;     break;
-        case "back":  _vk = vk_backspace; break;
+        case "left":   _vk = vk_left;      break;
+        case "right":  _vk = vk_right;     break;
+        case "back":   _vk = vk_backspace; break;
+        case "delete": _vk = vk_delete;    break;
         default: return false;
     }
     return scm_tty_key_tick(_vk);
@@ -844,14 +960,48 @@ function scm_repl__tab_complete() {
     var _prefix = string_copy(_buf, _start + 1, _cur - _start);
     if (_prefix == "") return;
 
-    // Collect matching names from env
+    // Collect matching names from env + keywords
     if (!variable_global_exists("scm_env")) return;
     var _all_names = scm_repl__env_names(global.scm_env);
+    // Also include keywords (define, lambda, let, etc.)
+    var _kw_key = ds_map_find_first(global.__repl_keywords);
+    while (_kw_key != undefined) {
+        array_push(_all_names, _kw_key);
+        _kw_key = ds_map_find_next(global.__repl_keywords, _kw_key);
+    }
+
+    // Prefix-aware filtering:
+    // If user typed "gml:" → only match gml:* names
+    // If user typed anything WITHOUT ":" → hide gml:* names (reduce noise)
+    var _has_colon = (string_pos(":", _prefix) > 0);
+
+    // If prefix is a namespace query (obj:..., spr:..., etc.),
+    // use patricia trie for fast completion instead of linear scan.
+    if (_has_colon) {
+        var _colon_pos = string_pos(":", _prefix);
+        var _ns = string_copy(_prefix, 1, _colon_pos - 1);
+        var _trie = scm_meta_get_trie(_ns);
+        if (!is_undefined(_trie)) {
+            // Extract the part after "ns:" and walk the trie
+            var _suffix = string_copy(_prefix, _colon_pos + 1, string_length(_prefix) - _colon_pos);
+            var _sub = scm_meta_trie_walk(_trie, _suffix);
+            if (!is_undefined(_sub)) {
+                var _completions = scm_meta_trie_collect(_sub, _prefix, 200);
+                for (var _j = 0; _j < array_length(_completions); _j++) {
+                    array_push(_all_names, _completions[_j]);
+                }
+            }
+        }
+    }
+
     var _matches = [];
     var _plen = string_length(_prefix);
     for (var _i = 0; _i < array_length(_all_names); _i++) {
-        if (string_copy(_all_names[_i], 1, _plen) == _prefix) {
-            array_push(_matches, _all_names[_i]);
+        var _name = _all_names[_i];
+        if (string_copy(_name, 1, _plen) == _prefix) {
+            // Skip gml:* names when user hasn't typed a colon
+            if (!_has_colon && string_copy(_name, 1, 4) == "gml:") continue;
+            array_push(_matches, _name);
         }
     }
 
@@ -927,18 +1077,111 @@ function scm_repl__exec_command(_cmd) {
     var _lower = string_lower(_cmd);
 
     if (_lower == ":help" || _lower == ":h" || _lower == ":?") {
-        scm_repl__add_output("REPL Commands:", global.__repl_c_builtin);
-        scm_repl__add_output("  :help           Show this help", global.__repl_c_comment);
-        scm_repl__add_output("  :clear          Clear output", global.__repl_c_comment);
-        scm_repl__add_output("  :env [prefix]   List env bindings (optionally filtered)", global.__repl_c_comment);
-        scm_repl__add_output("  Ctrl+L          Clear output (shortcut)", global.__repl_c_comment);
-        scm_repl__add_output("  Tab             Complete symbol at cursor", global.__repl_c_comment);
+        scm_repl__add_output(scm_repl__str("help_header"), global.__repl_c_builtin);
+        scm_repl__add_output(scm_repl__str("help_cmd_help"), global.__repl_c_comment);
+        scm_repl__add_output(scm_repl__str("help_cmd_help_fn"), global.__repl_c_comment);
+        scm_repl__add_output(scm_repl__str("help_cmd_clear"), global.__repl_c_comment);
+        scm_repl__add_output(scm_repl__str("help_cmd_env"), global.__repl_c_comment);
+        scm_repl__add_output(scm_repl__str("help_cmd_load"), global.__repl_c_comment);
+        scm_repl__add_output(scm_repl__str("help_cmd_ctrl_l"), global.__repl_c_comment);
+        scm_repl__add_output(scm_repl__str("help_cmd_ctrl_c"), global.__repl_c_comment);
+        scm_repl__add_output(scm_repl__str("help_cmd_ctrl_ae"), global.__repl_c_comment);
+        scm_repl__add_output(scm_repl__str("help_cmd_tab"), global.__repl_c_comment);
         scm_repl__add_output("", global.__repl_c_default);
+        return;
+    }
+
+    // :help <name> — look up function help
+    if (string_copy(_lower, 1, 6) == ":help " || string_copy(_lower, 1, 3) == ":h ") {
+        var _prefix_len = (string_copy(_lower, 1, 6) == ":help ") ? 6 : 3;
+        var _topic = string_copy(_cmd, _prefix_len + 1, string_length(_cmd) - _prefix_len);
+        // Trim leading spaces
+        while (string_length(_topic) > 0 && string_char_at(_topic, 1) == " ") {
+            _topic = string_copy(_topic, 2, string_length(_topic) - 1);
+        }
+        // Trim trailing spaces
+        while (string_length(_topic) > 0 && string_char_at(_topic, string_length(_topic)) == " ") {
+            _topic = string_copy(_topic, 1, string_length(_topic) - 1);
+        }
+        if (_topic == "") {
+            // Empty topic — show general help instead
+            scm_repl__exec_command(":help");
+            return;
+        }
+        if (ds_map_exists(global.__repl_help, _topic)) {
+            var _text = ds_map_find_value(global.__repl_help, _topic);
+            // Split by \n and output each line
+            var _lines = scm_repl__string_split_char(_text, "\n");
+            // First line = signature (highlighted as builtin)
+            if (array_length(_lines) > 0) {
+                scm_repl__add_output(_lines[0], global.__repl_c_builtin);
+            }
+            // Remaining lines = description + example
+            for (var _i = 1; _i < array_length(_lines); _i++) {
+                var _c = (string_copy(_lines[_i], 1, 2) == "  ")
+                    ? global.__repl_c_string   // indented = example → green
+                    : global.__repl_c_default;  // description → default color
+                scm_repl__add_output(_lines[_i], _c);
+            }
+        } else {
+            scm_repl__add_output(
+                string_replace(scm_repl__str("help_not_found"), "{0}", _topic),
+                global.__repl_c_error
+            );
+        }
         return;
     }
 
     if (_lower == ":clear" || _lower == ":cls") {
         scm_repl__clear_output();
+        return;
+    }
+
+    // :load path — evaluate a Scheme file
+    if (string_copy(_lower, 1, 6) == ":load ") {
+        var _path = string_copy(_cmd, 7, string_length(_cmd) - 6);
+        // Trim whitespace
+        while (string_length(_path) > 0 && string_char_at(_path, 1) == " ") {
+            _path = string_copy(_path, 2, string_length(_path) - 1);
+        }
+        while (string_length(_path) > 0 && string_char_at(_path, string_length(_path)) == " ") {
+            _path = string_copy(_path, 1, string_length(_path) - 1);
+        }
+        // Strip surrounding quotes if present (handles paths with spaces)
+        if (string_length(_path) >= 2
+            && string_char_at(_path, 1) == chr(34)
+            && string_char_at(_path, string_length(_path)) == chr(34)) {
+            _path = string_copy(_path, 2, string_length(_path) - 2);
+        }
+        if (_path == "") {
+            scm_repl__add_output(scm_repl__str("load_usage"), global.__repl_c_error);
+            return;
+        }
+        scm_repl__add_output(
+            string_replace(scm_repl__str("load_loading"), "{0}", _path),
+            global.__repl_c_comment
+        );
+        scm_output_clear();
+        var _result;
+        try {
+            _result = scm_eval_file(_path);
+        } catch (_e) {
+            _result = scm_err("GML exception: " + scm__exception_msg(_e));
+        }
+        scm_output_flush();
+        var _out = scm_output_get();
+        for (var _j = 0; _j < array_length(_out); _j++) {
+            scm_repl__add_output(_out[_j], global.__repl_c_default);
+        }
+        if (_result.t == SCM_ERR) {
+            var _err_str = scm_display_str(_result);
+            var _err_lines = scm_repl__string_split_char(_err_str, "\n");
+            for (var _j = 0; _j < array_length(_err_lines); _j++) {
+                scm_repl__add_output(_err_lines[_j], global.__repl_c_error);
+            }
+        } else if (_result.t != SCM_VOID) {
+            scm_repl__add_output(scm_write_str(_result), global.__repl_c_result);
+        }
         return;
     }
 
@@ -958,9 +1201,16 @@ function scm_repl__exec_command(_cmd) {
         var _names = scm_repl__env_names(global.scm_env);
         var _filtered = [];
         var _flen = string_length(_filter);
+        var _filter_lower = string_lower(_filter);
         for (var _i = 0; _i < array_length(_names); _i++) {
-            if (_flen == 0 || string_copy(_names[_i], 1, _flen) == _filter) {
-                array_push(_filtered, _names[_i]);
+            if (_flen == 0) {
+                // No filter: skip gml:* to reduce noise
+                if (string_copy(_names[_i], 1, 4) != "gml:")
+                    array_push(_filtered, _names[_i]);
+            } else {
+                // Substring match (case-insensitive)
+                if (string_pos(_filter_lower, string_lower(_names[_i])) > 0)
+                    array_push(_filtered, _names[_i]);
             }
         }
         var _fn = array_length(_filtered);
@@ -983,7 +1233,10 @@ function scm_repl__exec_command(_cmd) {
         return;
     }
 
-    scm_repl__add_output("Unknown command: " + _cmd + "  (try :help)", global.__repl_c_error);
+    scm_repl__add_output(
+        string_replace(scm_repl__str("unknown_cmd"), "{0}", _cmd),
+        global.__repl_c_error
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1051,23 +1304,23 @@ function scm_repl__draw_input(_x0, _y) {
             if (_offset > 0) {
                 var _before = string_copy(_text, 1, _offset);
                 scm_repl__draw_text(_xx, _y, _before, _color, 1.0);
-                _xx += _offset * _cw;
+                _xx += scm_repl__display_width(_before) * _cw;
             }
             // Matched character (gold)
             var _matched = string_char_at(_text, _offset + 1);
             scm_repl__draw_text(_xx, _y, _matched, global.__repl_c_match, 1.0);
-            _xx += _cw;
+            _xx += scm_repl__display_width(_matched) * _cw;
             // After part
             var _after_start = _offset + 1;
             if (_after_start < _tlen) {
                 var _after = string_copy(_text, _after_start + 1, _tlen - _after_start);
                 scm_repl__draw_text(_xx, _y, _after, _color, 1.0);
-                _xx += (_tlen - _after_start) * _cw;
+                _xx += scm_repl__display_width(_after) * _cw;
             }
         } else {
             // Normal draw
             scm_repl__draw_text(_xx, _y, _text, _color, 1.0);
-            _xx += _tlen * _cw;
+            _xx += scm_repl__display_width(_text) * _cw;
         }
 
         _char_pos += _tlen;
@@ -1078,7 +1331,8 @@ function scm_repl__draw_input(_x0, _y) {
 function scm_repl__draw_cursor(_x0, _y) {
     var _prompt = (global.__repl_line_idx == 0) ? "> " : "... ";
     var _cw = scm_tty_char_w();
-    var _cursor_x = _x0 + (string_length(_prompt) + global.__repl_cursor) * _cw;
+    var _buf_before = string_copy(global.__repl_buf, 1, global.__repl_cursor);
+    var _cursor_x = _x0 + (string_length(_prompt) + scm_repl__display_width(_buf_before)) * _cw;
     var _blink = abs(sin(current_time / 300));
     scm_repl__draw_text(_cursor_x - 1, _y, "|", global.__repl_c_white, _blink);
 }
@@ -1090,16 +1344,26 @@ function scm_repl__draw_cursor(_x0, _y) {
 /// Process keyboard input. Called only when REPL is visible.
 function scm_repl__step_input() {
     // Character input
+    var _ctrl = keyboard_check(vk_control);
+
+    // Character input.
+    // Consume keyboard_string every frame to prevent accumulation.
+    // Only insert characters when Ctrl is NOT held (Ctrl+key = shortcut).
     var _typed = keyboard_string;
     keyboard_string = "";
-    if (string_length(_typed) > 0) {
+    if (!_ctrl && string_length(_typed) > 0) {
         // When Shift is held, keyboard_string may return base chars
         // (e.g. "9" instead of "("). Remap through shift table.
+        // Skip remap for non-ASCII chars (IME input arrives with shift state).
         if (keyboard_check(vk_shift)) {
             var _remapped = "";
             for (var _k = 1; _k <= string_length(_typed); _k++) {
                 var _c = string_char_at(_typed, _k);
-                _remapped += scm_repl__shift_char(string_upper(_c));
+                if (ord(_c) <= 0x7E) {
+                    _remapped += scm_repl__shift_char(string_upper(_c));
+                } else {
+                    _remapped += _c;
+                }
             }
             _typed = _remapped;
         }
@@ -1108,12 +1372,12 @@ function scm_repl__step_input() {
     }
 
     // Key repeat keys (time-based via TTY layer)
-    if (scm_repl__check_key("left"))  scm_repl__key("left");
-    if (scm_repl__check_key("right")) scm_repl__key("right");
-    if (scm_repl__check_key("back"))  scm_repl__key("backspace");
+    if (scm_repl__check_key("left"))   scm_repl__key("left");
+    if (scm_repl__check_key("right"))  scm_repl__key("right");
+    if (scm_repl__check_key("back"))   scm_repl__key("backspace");
+    if (scm_repl__check_key("delete")) scm_repl__key("delete");
 
     // Non-repeat special keys
-    if (keyboard_check_pressed(vk_delete)) scm_repl__key("delete");
     if (keyboard_check_pressed(vk_home))   scm_repl__key("home");
     if (keyboard_check_pressed(vk_end))    scm_repl__key("end");
 
@@ -1131,16 +1395,30 @@ function scm_repl__step_input() {
     if (keyboard_check_pressed(vk_up))   scm_repl__key("up");
     if (keyboard_check_pressed(vk_down)) scm_repl__key("down");
 
-    // Ctrl+V paste
-    if (keyboard_check(vk_control) && keyboard_check_pressed(ord("V"))) {
-        if (clipboard_has_text()) {
-            scm_repl__paste(clipboard_get_text());
+    // ── Ctrl shortcuts ──
+    if (_ctrl) {
+        if (keyboard_check_pressed(ord("V"))) {
+            if (clipboard_has_text()) {
+                scm_repl__paste(clipboard_get_text());
+                scm_tty_scroll_to_bottom();
+            }
         }
-    }
-
-    // Ctrl+L clear output
-    if (keyboard_check(vk_control) && keyboard_check_pressed(ord("L"))) {
-        scm_repl__clear_output();
+        if (keyboard_check_pressed(ord("L"))) {
+            scm_repl__clear_output();
+        }
+        if (keyboard_check_pressed(ord("C"))) {
+            var _cur = scm_repl__join_lines();
+            if (_cur != "") {
+                scm_repl__add_output("> " + _cur + "^C", global.__repl_c_comment);
+            }
+            scm_repl__reset_input();
+        }
+        if (keyboard_check_pressed(ord("A"))) {
+            global.__repl_cursor = 0;
+        }
+        if (keyboard_check_pressed(ord("E"))) {
+            global.__repl_cursor = string_length(global.__repl_buf);
+        }
     }
 
     // Tab completion
@@ -1167,7 +1445,7 @@ function scm_repl__do_eval(_code) {
     try {
         _result = scm_eval_program(_code, global.scm_env);
     } catch (_e) {
-        _result = scm_err("GML exception: " + string(_e));
+        _result = scm_err("GML exception: " + scm__exception_msg(_e));
     }
     scm_output_flush();
 
@@ -1179,7 +1457,13 @@ function scm_repl__do_eval(_code) {
 
     // Feed eval result
     if (_result.t == SCM_ERR) {
-        scm_repl__add_output(scm_display_str(_result), global.__repl_c_error);
+        // Error message may contain newlines (e.g. multi-line GML exception info).
+        // Split and display each line separately for readability.
+        var _err_str = scm_display_str(_result);
+        var _err_lines = scm_repl__string_split_char(_err_str, "\n");
+        for (var _j = 0; _j < array_length(_err_lines); _j++) {
+            scm_repl__add_output(_err_lines[_j], global.__repl_c_error);
+        }
     } else if (_result.t != SCM_VOID) {
         scm_repl__add_output(scm_write_str(_result), global.__repl_c_result);
     }
@@ -1204,29 +1488,6 @@ function scm_repl__init_keywords() {
     return _m;
 }
 
-/// Initialize builtin ds_map for O(1) lookup.
-function scm_repl__init_builtins() {
-    var _m = ds_map_create();
-    var _bis = [
-        "car", "cdr", "cons", "list", "null?", "pair?", "map", "filter",
-        "foldl", "foldr", "for-each", "append", "reverse", "length",
-        "apply", "not", "equal?", "eqv?", "eq?", "number?", "string?",
-        "symbol?", "boolean?", "list?", "zero?", "positive?", "negative?",
-        "display", "write", "print", "newline", "error",
-        "+", "-", "*", "/", "=", "<", ">", "<=", ">=", "modulo",
-        "abs", "min", "max", "floor", "ceiling", "round", "sqrt", "expt",
-        "string-length", "string-ref", "string-append", "substring",
-        "string-contains?", "string-split", "string-join",
-        "string->number", "number->string",
-        "assoc", "member", "find", "any", "every", "remove", "count",
-        "take", "drop", "range", "iota", "make-list", "zip", "partition"
-    ];
-    for (var _i = 0; _i < array_length(_bis); _i++) {
-        ds_map_set(_m, _bis[_i], true);
-    }
-    return _m;
-}
-
 // ═══════════════════════════════════════════════════════════════════
 //  Section 18: Public API (callers — defined last)
 // ═══════════════════════════════════════════════════════════════════
@@ -1237,7 +1498,7 @@ function scm_repl_create() {
 
     // Lookup maps
     global.__repl_keywords = scm_repl__init_keywords();
-    global.__repl_builtins = scm_repl__init_builtins();
+    global.__repl_help     = scm_repl__init_help();
 
     // Color palette (One Dark)
     global.__repl_c_keyword = make_colour_rgb(198, 120, 221);
@@ -1277,16 +1538,38 @@ function scm_repl_create() {
         scm_trace("[scm-repl] font_add failed, using default font");
     }
 
+    // Load CJK fallback font (Chinese: U+4E00..U+9FFF, ~21K glyphs)
+    var _cjk = font_add("HanyiSentyYongleEncyclopedia-2020.ttf", 16, false, false, 0x4E00, 0x9FFF);
+    if (_cjk != -1) {
+        global.__repl_font_cjk = _cjk;
+        scm_trace("[scm-repl] CJK fallback font loaded");
+    } else {
+        global.__repl_font_cjk = -1;
+        scm_trace("[scm-repl] CJK font not found, Chinese text will not render");
+    }
+
     // Initialize TTY layer (metrics, output buffer, key repeat, scroll)
-    scm_tty_init(global.__repl_font);
+    scm_tty_init(global.__repl_font, global.__repl_font_cjk);
 
     // Visibility
     global.scm_repl_visible = false;
 
-    // Welcome message
-    scm_repl__add_output("", global.__repl_c_default);
-    scm_repl__add_output("F1 toggle | Enter eval | Shift+Enter newline | Tab complete | :help commands", global.__repl_c_comment);
-    scm_repl__add_output("Scheme REPL (gml_scheme) — native GML", global.__repl_c_comment);
+    // Welcome message — crystal shard ASCII art
+    //   Visual (top to bottom):
+    //       /\
+    //      /  \    gml_scheme
+    //      \  /    Stoneshard Scheme REPL
+    //       \/
+    //              :help | F1 toggle | Tab complete
+    scm_repl__add_output("",                                                      global.__repl_c_default);
+    scm_repl__add_output("       /\\",                                            global.__repl_c_keyword);
+    scm_repl__add_output_spans([[global.__repl_c_keyword, "      /  \\    "],
+                                [global.__repl_c_builtin, "gml_scheme"]]);
+    scm_repl__add_output_spans([[global.__repl_c_keyword, "      \\  /    "],
+                                [global.__repl_c_default, "Stoneshard Scheme REPL"]]);
+    scm_repl__add_output("       \\/",                                            global.__repl_c_keyword);
+    scm_repl__add_output("",                                                      global.__repl_c_default);
+    scm_repl__add_output("  :help commands | F1 toggle | Tab complete | Ctrl+L clear", global.__repl_c_comment);
 
     // Env readiness check
     if (variable_global_exists("scm_env")) {
@@ -1310,9 +1593,6 @@ function scm_repl_create() {
 function scm_repl_destroy() {
     if (ds_exists(global.__repl_keywords, ds_type_map)) {
         ds_map_destroy(global.__repl_keywords);
-    }
-    if (ds_exists(global.__repl_builtins, ds_type_map)) {
-        ds_map_destroy(global.__repl_builtins);
     }
     scm_tty_destroy();
 }

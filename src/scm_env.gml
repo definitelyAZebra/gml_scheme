@@ -2,6 +2,10 @@
 ///
 /// Each environment is a struct { parent, bindings }.
 /// `bindings` is also a struct, use variable_struct_* for dynamic key access.
+///
+/// !! UMT BYTECODE 17 — FORBIDDEN SYNTAX (build.py lint enforced):
+///    [$]  [?]  [@]  struct_set()  is_instanceof()
+///    Use: variable_struct_get/set, ds_map_find_value/set, array_get/set
 
 // ── Create / lookup / set ───────────────────────────────────────────
 

@@ -1,5 +1,5 @@
 ; ═══════════════════════════════════════════════════════════════
-;  prelude.scm — Standard library
+;  prelude.scm — R5RS-compatible standard library
 ;
 ;  Loaded after scm_register_core, scm_register_gml_builtins,
 ;  and scm_register_bridge. Everything here is pure Scheme built
@@ -7,12 +7,16 @@
 ;
 ;  Design principles:
 ;    • Tail-recursive where possible (GML stack ~256 frames)
-;    • R5RS-compatible names; GML specifics use gml: prefix
+;    • R5RS-compatible names only — GML specifics go in stdlib.scm
 ;    • Avoid redefining core builtins (see scm_core.gml)
+;
+;  See also: stdlib.scm (GML interop, game domain, asset discovery)
 ; ═══════════════════════════════════════════════════════════════
 
 ; ── Scheme-standard math (bare aliases for gml: wrappers) ────
 ; These are NOT in scm_core, so the prelude provides them.
+; TODO: codegen could support an `alias` field in BUILTIN_SPEC to register
+;   bare names directly, eliminating dual exposure (gml:abs + abs).
 (define abs     gml:abs)
 (define floor   gml:floor)
 (define ceiling gml:ceil)
@@ -38,29 +42,14 @@
 (define (caddr x) (car (cdr (cdr x))))
 (define (cdddr x) (cdr (cdr (cdr x))))
 
-; ── Higher-order functions (all tail-recursive) ──────────────
-
-(define (map f lst)
-  (let loop ((l lst) (acc '()))
-    (if (null? l) (reverse acc)
-      (loop (cdr l) (cons (f (car l)) acc)))))
-
-(define (filter pred lst)
-  (let loop ((l lst) (acc '()))
-    (if (null? l) (reverse acc)
-      (if (pred (car l))
-        (loop (cdr l) (cons (car l) acc))
-        (loop (cdr l) acc)))))
+; ── Higher-order functions ────────────────────────────────────
+;; map, filter, for-each → native builtins (scm_core.gml)
 
 ;; (remove pred lst) — complement of filter
 (define (remove pred lst)
   (filter (lambda (x) (not (pred x))) lst))
 
-(define (for-each f lst)
-  (let loop ((l lst))
-    (when (pair? l)
-      (f (car l))
-      (loop (cdr l)))))
+(define (displayln x) (display x) (newline))
 
 ;; (foldl f init lst) — left fold (tail-recursive)
 ;; f signature: (f element accumulator) → accumulator
@@ -80,21 +69,8 @@
 (define (append-map f lst)
   (foldr (lambda (x acc) (append (f x) acc)) '() lst))
 
-; ── Search & membership (tail-recursive) ─────────────────────
-
-(define (assoc key lst)
-  (let loop ((l lst))
-    (cond
-      ((null? l) #f)
-      ((equal? key (caar l)) (car l))
-      (else (loop (cdr l))))))
-
-(define (member x lst)
-  (let loop ((l lst))
-    (cond
-      ((null? l) #f)
-      ((equal? x (car l)) l)
-      (else (loop (cdr l))))))
+; ── Search & membership ───────────────────────────────────────
+;; assoc, member → native builtins (scm_core.gml)
 
 (define (find pred lst)
   (let loop ((l lst))
@@ -178,6 +154,36 @@
     ((pair? (car lst)) (append (flatten (car lst)) (flatten (cdr lst))))
     (else (cons (car lst) (flatten (cdr lst))))))
 
+; ── Sorting ──────────────────────────────────────────────────
+
+;; Tail-recursive merge of two sorted lists.
+(define (sort--merge a b less?)
+  (let loop ((a a) (b b) (acc '()))
+    (cond
+      ((null? a) (foldl cons b acc))
+      ((null? b) (foldl cons a acc))
+      ((less? (car b) (car a))
+       (loop a (cdr b) (cons (car b) acc)))
+      (else
+       (loop (cdr a) b (cons (car a) acc))))))
+
+;; (sort lst less?) → sorted list
+;; Bottom-up merge sort — O(n log n), fully tail-recursive (GML stack safe).
+(define (sort lst less?)
+  (if (or (null? lst) (null? (cdr lst)))
+    lst
+    (let merge-pass ((runs (map list lst)))
+      (if (null? (cdr runs))
+        (car runs)
+        (merge-pass
+          (let pair-up ((r runs) (acc '()))
+            (cond
+              ((null? r) (reverse acc))
+              ((null? (cdr r)) (reverse (cons (car r) acc)))
+              (else
+                (pair-up (cddr r)
+                  (cons (sort--merge (car r) (cadr r) less?) acc))))))))))
+
 ; ── Predicate combinators (tail-recursive) ───────────────────
 
 ;; (any pred lst) → #t if pred holds for some element
@@ -220,6 +226,22 @@
       (if (null? l) acc
         (loop (cdr l) (string-append acc sep (car l)))))))
 
+;; (string<? a b) → #t if a is lexicographically before b (case-sensitive)
+(define (string<? a b)
+  (let ((la (string-length a))
+        (lb (string-length b)))
+    (let loop ((i 0))
+      (cond
+        ((= i la) (< la lb))
+        ((= i lb) #f)
+        (else
+          (let ((ca (char->integer (string-ref a i)))
+                (cb (char->integer (string-ref b i))))
+            (cond
+              ((< ca cb) #t)
+              ((> ca cb) #f)
+              (else (loop (+ i 1))))))))))
+
 ; ── Association list helpers ─────────────────────────────────
 
 ;; (alist-ref key alist default) → value or default
@@ -231,144 +253,3 @@
 (define (alist-set key value alist)
   (cons (cons key value)
         (filter (lambda (p) (not (equal? key (car p)))) alist)))
-
-; ── GML bridge helpers ───────────────────────────────────────
-; Built on gml: builtins. scm_wrap(undefined) → nil terminates
-; ds_map iteration.
-
-(define (ds-map-keys m)
-  (let loop ((k (gml:ds-map-find-first m)) (acc '()))
-    (if (null? k) (reverse acc)
-      (loop (gml:ds-map-find-next m k) (cons k acc)))))
-
-(define (ds-map-values m)
-  (map (lambda (k) (gml:ds-map-find-value m k)) (ds-map-keys m)))
-
-(define (ds-map->alist m)
-  (map (lambda (k) (cons k (gml:ds-map-find-value m k))) (ds-map-keys m)))
-
-(define (struct-keys s)
-  (let* ((names (gml:variable-struct-get-names s))
-         (n (gml:array-length names)))
-    (let loop ((i 0) (acc '()))
-      (if (= i n) (reverse acc)
-        (loop (+ i 1) (cons (gml:array-get names i) acc))))))
-
-(define (struct-values s)
-  (map (lambda (k) (gml:variable-struct-get s k)) (struct-keys s)))
-
-(define (struct->alist s)
-  (map (lambda (k) (cons k (gml:variable-struct-get s k))) (struct-keys s)))
-
-;; (inspect obj) — print all fields of a struct or instance
-;; For instances: uses variable_instance_get; for structs: uses variable_struct_get.
-(define (inspect obj)
-  (let ((keys (if (struct? obj)
-                  (struct-keys obj)
-                  (instance-keys obj)))
-        (getter (if (struct? obj)
-                    gml:variable-struct-get
-                    gml:variable-instance-get)))
-    (for-each
-      (lambda (k)
-        (display "  ")
-        (display k)
-        (display ": ")
-        (displayln (getter obj k)))
-      keys)))
-
-;; (alist->ds-map alist) → new ds_map (caller must destroy!)
-(define (alist->ds-map alist)
-  (let ((m (gml:ds-map-create)))
-    (for-each (lambda (p) (gml:ds-map-set m (car p) (cdr p))) alist)
-    m))
-
-;; (list->ds-list lst) → new ds_list (caller must destroy!)
-(define (list->ds-list lst)
-  (let ((l (gml:ds-list-create)))
-    (for-each (lambda (x) (gml:ds-list-add l x)) lst)
-    l))
-
-; ── GML short aliases ────────────────────────────────────────
-; Ergonomic names for the most frequently used gml: builtins.
-
-; Instance variable/existence access
-(define instance-get     gml:variable-instance-get)
-(define instance-set!    gml:variable-instance-set)
-(define instance-exists? gml:instance-exists)
-(define (instance-keys id)
-  (array->list (gml:variable-instance-get-names id)))
-
-; Global variable access
-(define global-get  gml:variable-global-get)
-(define global-set! gml:variable-global-set)
-
-; Struct access
-(define struct-get    gml:variable-struct-get)
-(define struct-set!   gml:variable-struct-set)
-(define struct-has?   gml:variable-struct-exists)
-
-; ds_map / ds_list — NO short aliases.
-; These require manual gml:ds-map-destroy / gml:ds-list-destroy.
-; The verbose gml: prefix is intentional friction.
-
-; Array convenience
-(define array-ref     gml:array-get)
-(define array-set!    gml:array-set)
-(define array-length  gml:array-length)
-(define array-create  gml:array-create)
-
-; ── Asset discovery ──────────────────────────────────────────
-; *xxx* handles → GML arrays populated by scm_meta_init().
-; One boxing layer only (SCM_HANDLE wrapping GML array).
-; Tab completion also reads these globals directly from GML.
-
-(define *objects*   (global-get "__scm_meta_objects"))
-(define *sprites*   (global-get "__scm_meta_sprites"))
-(define *sounds*    (global-get "__scm_meta_sounds"))
-(define *rooms*     (global-get "__scm_meta_rooms"))
-(define *scripts*   (global-get "__scm_meta_scripts"))
-(define *functions* (global-get "__scm_meta_functions"))
-(define *obj-tree*  (global-get "__scm_meta_obj_tree"))
-
-;; (search-names arr pattern) → list of matching strings
-;; Linear scan with case-insensitive substring match.
-(define (search-names arr pat)
-  (let ((n (array-length arr))
-        (p (gml:string-lower pat)))
-    (let loop ((i 0) (acc '()))
-      (if (= i n) (reverse acc)
-        (let ((name (array-ref arr i)))
-          (if (> (gml:string-pos p (gml:string-lower name)) 0)
-            (loop (+ i 1) (cons name acc))
-            (loop (+ i 1) acc)))))))
-
-;; Search by category
-(define (objects pat)   (search-names *objects* pat))
-(define (sprites pat)   (search-names *sprites* pat))
-(define (sounds pat)    (search-names *sounds* pat))
-(define (rooms pat)     (search-names *rooms* pat))
-(define (scripts pat)   (search-names *scripts* pat))
-(define (functions pat) (search-names *functions* pat))
-
-;; (object-children name) → list of child names (static struct tree)
-(define (object-children name)
-  (if (gml:variable-struct-exists *obj-tree* name)
-    (array->list (gml:variable-struct-get *obj-tree* name))
-    '()))
-
-;; (object-parent name-or-idx) → parent name or #f (runtime GML)
-(define (object-parent name-or-idx)
-  (let* ((idx (if (string? name-or-idx)
-                  (gml:asset-get-index name-or-idx) name-or-idx))
-         (p (gml:object-get-parent idx)))
-    (if (< p 0) #f (gml:object-get-name p))))
-
-;; (object-ancestors name-or-idx) → ancestor names list (nearest → root)
-(define (object-ancestors name-or-idx)
-  (let ((idx (if (string? name-or-idx)
-                 (gml:asset-get-index name-or-idx) name-or-idx)))
-    (let loop ((i (gml:object-get-parent idx)) (acc '()))
-      (if (< i 0) (reverse acc)
-        (loop (gml:object-get-parent i)
-              (cons (gml:object-get-name i) acc))))))

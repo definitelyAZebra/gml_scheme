@@ -6,9 +6,6 @@ src/scm_gml_builtins.gml
 src/scm_meta.gml
 src/scm_help.gml
 
-# Generated trie data (regenerate with: python codegen_meta.py)
-data/trie/
-
 # Exported game metadata (regenerate with: python run_export_meta.py)
 data/meta/
 

@@ -90,408 +90,33 @@ function scm_repl__display_width_n(_s, _n) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  Section 2: Delimiter / number detection
+//  Section 4: Cursor position mapping
 // ═══════════════════════════════════════════════════════════════════
 
-/// Check if a single character (string) is a delimiter.
-function scm_repl__is_delimiter(_ch) {
-    if (_ch == "") return true;
-    if (_ch == " " || _ch == "\t" || _ch == "\n" || _ch == "\r") return true;
-    if (_ch == "(" || _ch == ")") return true;
-    if (_ch == "[" || _ch == "]" || _ch == "{" || _ch == "}") return true;
-    if (_ch == "\"" || _ch == ";") return true;
-    if (_ch == "'" || _ch == "`" || _ch == ",") return true;
-    return false;
-}
-
-/// Check if a string represents a number (optional +/-, digits, at most one dot).
-function scm_repl__is_number(_s) {
-    var _len = string_length(_s);
-    if (_len == 0) return false;
-
-    var _ch0 = string_char_at(_s, 1);
-    var _start = 0;
-    if (_ch0 == "+" || _ch0 == "-") {
-        _start = 1;
-        if (_len == 1) return false;
-    }
-
-    var _has_digit = false;
-    var _has_dot = false;
-    for (var _i = _start; _i < _len; _i++) {
-        var _ch = string_char_at(_s, _i + 1); // 1-based
-        var _o = ord(_ch);
-        if (_o >= 48 && _o <= 57) { // '0'-'9'
-            _has_digit = true;
-        } else if (_ch == "." && !_has_dot) {
-            _has_dot = true;
-        } else {
-            return false;
-        }
-    }
-    return _has_digit;
-}
-
-// ═══════════════════════════════════════════════════════════════════
-//  Section 3: Tokenizer
-// ═══════════════════════════════════════════════════════════════════
-
-/// Token type constants (used as array[0] in token pairs)
-#macro RTOK_WHITESPACE  0
-#macro RTOK_COMMENT     1
-#macro RTOK_STRING      2
-#macro RTOK_LPAREN      3
-#macro RTOK_RPAREN      4
-#macro RTOK_QUOTE       5
-#macro RTOK_BOOLEAN     6
-#macro RTOK_NUMBER      7
-#macro RTOK_KEYWORD     8
-#macro RTOK_BUILTIN     9
-#macro RTOK_SYMBOL      10
-
-/// Check if a symbol name refers to a procedure (builtin or lambda) in the env.
-function scm_repl__is_procedure(_name) {
-    if (!variable_global_exists("scm_env")) return false;
-    var _val = scm_env_get(global.scm_env, _name);
-    if (_val == undefined) return false;
-    return (_val.t == SCM_FN || _val.t == SCM_LAMBDA);
-}
-
-/// Tokenize a source string.
-/// Returns array of [type, text] pairs.
-function scm_repl__tokenize(_src) {
-    var _len = string_length(_src);
-    var _tokens = [];
+/// Compute the global cursor position (0-based) in the joined lines text.
+/// Must be called after scm_repl__sync_buf().
+function scm_repl__global_cursor_pos() {
     var _pos = 0;
-
-    while (_pos < _len) {
-        var _ch = string_char_at(_src, _pos + 1); // GML is 1-based
-
-        // Whitespace run
-        if (_ch == " " || _ch == "\t" || _ch == "\n" || _ch == "\r") {
-            var _end = _pos + 1;
-            while (_end < _len) {
-                var _wc = string_char_at(_src, _end + 1);
-                if (_wc != " " && _wc != "\t" && _wc != "\n" && _wc != "\r") break;
-                _end++;
-            }
-            array_push(_tokens, [RTOK_WHITESPACE, string_copy(_src, _pos + 1, _end - _pos)]);
-            _pos = _end;
-            continue;
-        }
-
-        // Comment: ; to end of line
-        if (_ch == ";") {
-            var _end = _pos + 1;
-            while (_end < _len && string_char_at(_src, _end + 1) != "\n") {
-                _end++;
-            }
-            array_push(_tokens, [RTOK_COMMENT, string_copy(_src, _pos + 1, _end - _pos)]);
-            _pos = _end;
-            continue;
-        }
-
-        // String literal
-        if (_ch == "\"") {
-            var _end = _pos + 1;
-            var _escaped = false;
-            while (_end < _len) {
-                var _sc = string_char_at(_src, _end + 1);
-                if (_escaped) {
-                    _escaped = false;
-                    _end++;
-                    continue;
-                }
-                if (_sc == "\\") {
-                    _escaped = true;
-                    _end++;
-                    continue;
-                }
-                if (_sc == "\"") {
-                    _end++;
-                    break;
-                }
-                _end++;
-            }
-            array_push(_tokens, [RTOK_STRING, string_copy(_src, _pos + 1, _end - _pos)]);
-            _pos = _end;
-            continue;
-        }
-
-        // Parens
-        if (_ch == "(") {
-            array_push(_tokens, [RTOK_LPAREN, "("]);
-            _pos++;
-            continue;
-        }
-        if (_ch == ")") {
-            array_push(_tokens, [RTOK_RPAREN, ")"]);
-            _pos++;
-            continue;
-        }
-        // Brackets (close only — #[ and #{ open via # handler)
-        if (_ch == "]") {
-            array_push(_tokens, [RTOK_RPAREN, "]"]);
-            _pos++;
-            continue;
-        }
-        if (_ch == "}") {
-            array_push(_tokens, [RTOK_RPAREN, "}"]);
-            _pos++;
-            continue;
-        }
-
-        // Quote sugar
-        if (_ch == "'") {
-            array_push(_tokens, [RTOK_QUOTE, "'"]);
-            _pos++;
-            continue;
-        }
-        if (_ch == "`") {
-            array_push(_tokens, [RTOK_QUOTE, "`"]);
-            _pos++;
-            continue;
-        }
-        if (_ch == ",") {
-            if (_pos + 1 < _len && string_char_at(_src, _pos + 2) == "@") {
-                array_push(_tokens, [RTOK_QUOTE, ",@"]);
-                _pos += 2;
-            } else {
-                array_push(_tokens, [RTOK_QUOTE, ","]);
-                _pos++;
-            }
-            continue;
-        }
-
-        // Hash literals (#t, #f, #[, #{)
-        if (_ch == "#") {
-            if (_pos + 1 < _len) {
-                var _next = string_char_at(_src, _pos + 2);
-                if (_next == "t" || _next == "f") {
-                    array_push(_tokens, [RTOK_BOOLEAN, "#" + _next]);
-                    _pos += 2;
-                    continue;
-                }
-                if (_next == "[") {
-                    array_push(_tokens, [RTOK_LPAREN, "#["]);
-                    _pos += 2;
-                    continue;
-                }
-                if (_next == "{") {
-                    array_push(_tokens, [RTOK_LPAREN, "#{"]);
-                    _pos += 2;
-                    continue;
-                }
-            }
-            array_push(_tokens, [RTOK_SYMBOL, "#"]);
-            _pos++;
-            continue;
-        }
-
-        // Atom: consume until delimiter, then classify
-        var _end = _pos + 1;
-        while (_end < _len && !scm_repl__is_delimiter(string_char_at(_src, _end + 1))) {
-            _end++;
-        }
-        var _text = string_copy(_src, _pos + 1, _end - _pos);
-        var _type;
-        if (scm_repl__is_number(_text)) {
-            _type = RTOK_NUMBER;
-        } else if (ds_map_exists(global.__repl_keywords, _text)) {
-            _type = RTOK_KEYWORD;
-        } else if (scm_repl__is_procedure(_text)) {
-            _type = RTOK_BUILTIN;
-        } else {
-            _type = RTOK_SYMBOL;
-        }
-        array_push(_tokens, [_type, _text]);
-        _pos = _end;
+    for (var _i = 0; _i < global.__repl_line_idx; _i++) {
+        _pos += string_length(global.__repl_lines[_i]) + 1; // +1 for \n
     }
-
-    return _tokens;
+    _pos += global.__repl_cursor;
+    return _pos;
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  Section 4: Paren depth / balance / completeness
-// ═══════════════════════════════════════════════════════════════════
-
-/// Count net paren depth, respecting strings and comments.
-function scm_repl__paren_depth(_src) {
-    var _len = string_length(_src);
-    var _depth = 0;
-    var _in_string = false;
-    var _in_comment = false;
-    var _escaped = false;
-
-    for (var _i = 0; _i < _len; _i++) {
-        var _ch = string_char_at(_src, _i + 1);
-
-        if (_in_comment) {
-            if (_ch == "\n") { _in_comment = false; }
-            continue;
+/// Convert a 0-based position in joined text (with \n separators)
+/// to [line_idx, char_offset_within_line]. Returns [-1, -1] if out of range.
+function scm_repl__pos_to_line_offset(_pos) {
+    var _n = array_length(global.__repl_lines);
+    var _run = 0;
+    for (var _i = 0; _i < _n; _i++) {
+        var _len = string_length(global.__repl_lines[_i]);
+        if (_pos >= _run && _pos < _run + _len) {
+            return [_i, _pos - _run];
         }
-
-        if (_in_string) {
-            if (_escaped) { _escaped = false; continue; }
-            if (_ch == "\\") { _escaped = true; continue; }
-            if (_ch == "\"") { _in_string = false; }
-            continue;
-        }
-
-        if (_ch == ";") { _in_comment = true; continue; }
-        if (_ch == "\"") { _in_string = true; continue; }
-        if (_ch == "(" || _ch == "[" || _ch == "{") { _depth++; continue; }
-        if (_ch == ")" || _ch == "]" || _ch == "}") { _depth--; continue; }
+        _run += _len + 1; // +1 for \n separator
     }
-    return _depth;
-}
-
-/// Check if source ends inside an unclosed string.
-function scm_repl__in_string(_src) {
-    var _len = string_length(_src);
-    var _in_str = false;
-    var _escaped = false;
-
-    for (var _i = 0; _i < _len; _i++) {
-        var _ch = string_char_at(_src, _i + 1);
-
-        if (_in_str) {
-            if (_escaped) { _escaped = false; continue; }
-            if (_ch == "\\") { _escaped = true; continue; }
-            if (_ch == "\"") { _in_str = false; continue; }
-            continue;
-        }
-
-        if (_ch == "\"") { _in_str = true; continue; }
-        if (_ch == ";") {
-            // Skip to end of line
-            while (_i + 1 < _len && string_char_at(_src, _i + 2) != "\n") {
-                _i++;
-            }
-            _i++; // skip past the \n
-            continue;
-        }
-    }
-    return _in_str;
-}
-
-/// Check if source has any non-whitespace non-comment content.
-function scm_repl__has_content(_src) {
-    var _len = string_length(_src);
-    var _in_comment = false;
-
-    for (var _i = 0; _i < _len; _i++) {
-        var _ch = string_char_at(_src, _i + 1);
-        if (_in_comment) {
-            if (_ch == "\n") _in_comment = false;
-            continue;
-        }
-        if (_ch == ";") { _in_comment = true; continue; }
-        if (_ch != " " && _ch != "\t" && _ch != "\n" && _ch != "\r") return true;
-    }
-    return false;
-}
-
-/// Check if source is a complete expression (balanced, not in string, has content).
-function scm_repl__complete(_src) {
-    return (scm_repl__paren_depth(_src) == 0)
-        && (!scm_repl__in_string(_src))
-        && scm_repl__has_content(_src);
-}
-
-/// Compute auto-indent level (2 spaces per open paren depth).
-function scm_repl__auto_indent(_src) {
-    var _d = scm_repl__paren_depth(_src);
-    if (_d <= 0) return 0;
-    return _d * 2;
-}
-
-// ═══════════════════════════════════════════════════════════════════
-//  Section 5: Matching paren finder
-// ═══════════════════════════════════════════════════════════════════
-
-/// Find matching paren position for cursor. Returns -1 if none.
-function scm_repl__match_paren(_src, _cursor_pos) {
-    var _len = string_length(_src);
-    if (_cursor_pos < 0 || _cursor_pos >= _len) return -1;
-
-    var _ch = string_char_at(_src, _cursor_pos + 1);
-    if (_ch == "(" || _ch == "[" || _ch == "{") return scm_repl__find_close(_src, _cursor_pos + 1, 1, _ch);
-    if (_ch == ")" || _ch == "]" || _ch == "}") return scm_repl__find_open(_src, _cursor_pos - 1, 1, _ch);
-    return -1;
-}
-
-/// Find closing bracket (scan forward). 0-based positions.
-/// _open_ch is the opening bracket char to determine the matching close.
-function scm_repl__find_close(_src, _pos, _depth, _open_ch) {
-    var _len = string_length(_src);
-    var _in_str = false;
-    var _escaped = false;
-    var _close_ch = (_open_ch == "(") ? ")" : ((_open_ch == "[") ? "]" : "}");
-
-    while (_pos < _len) {
-        var _ch = string_char_at(_src, _pos + 1);
-        if (_in_str) {
-            if (_escaped) { _escaped = false; }
-            else if (_ch == "\\") { _escaped = true; }
-            else if (_ch == "\"") { _in_str = false; }
-        } else {
-            if (_ch == "\"") { _in_str = true; }
-            else if (_ch == _open_ch) { _depth++; }
-            else if (_ch == _close_ch) {
-                _depth--;
-                if (_depth == 0) return _pos;
-            }
-        }
-        _pos++;
-    }
-    return -1;
-}
-
-/// Find opening bracket (scan backward). 0-based positions.
-/// Skips strings and comments correctly.
-/// _close_ch is the closing bracket char to determine the matching open.
-function scm_repl__find_open(_src, _pos, _depth, _close_ch) {
-    var _open_ch = (_close_ch == ")") ? "(" : ((_close_ch == "]") ? "[" : "{");
-    while (_pos >= 0) {
-        var _ch = string_char_at(_src, _pos + 1);
-
-        if (_ch == _close_ch || _ch == _open_ch) {
-            if (!scm_repl__pos_in_string(_src, _pos)) {
-                if (_ch == _close_ch) { _depth++; }
-                else {
-                    _depth--;
-                    if (_depth == 0) return _pos;
-                }
-            }
-        }
-        _pos--;
-    }
-    return -1;
-}
-
-/// Check if position _pos (0-based) in _src is inside a string literal.
-/// Scans from the start, tracking string/comment/escape state.
-function scm_repl__pos_in_string(_src, _pos) {
-    var _in_str = false;
-    var _in_comment = false;
-    var _escaped = false;
-    for (var _i = 0; _i < _pos; _i++) {
-        var _ch = string_char_at(_src, _i + 1);
-        if (_in_comment) {
-            if (_ch == "\n") _in_comment = false;
-            continue;
-        }
-        if (_in_str) {
-            if (_escaped) { _escaped = false; continue; }
-            if (_ch == "\\") { _escaped = true; continue; }
-            if (_ch == "\"") { _in_str = false; }
-            continue;
-        }
-        if (_ch == ";") { _in_comment = true; continue; }
-        if (_ch == "\"") { _in_str = true; }
-    }
-    return _in_str;
+    return [-1, -1];
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -510,6 +135,7 @@ function scm_repl__token_color(_type) {
         case RTOK_LPAREN:     return global.__repl_c_paren;
         case RTOK_RPAREN:     return global.__repl_c_paren;
         case RTOK_QUOTE:      return global.__repl_c_keyword; // same as keyword (purple)
+        case RTOK_MACRO:      return global.__repl_c_keyword; // macros highlighted like keywords (purple)
         case RTOK_SYMBOL:     return global.__repl_c_symbol;
         default:              return global.__repl_c_default;
     }
@@ -580,7 +206,7 @@ function scm_repl__echo_input(_full) {
     for (var _i = 0; _i < _n; _i++) {
         var _line = _lines[_i];
         var _prefix = (_i == 0) ? "> " : "... ";
-        var _tokens = scm_repl__tokenize(_line);
+        var _tokens = scm_lex_tokenize(_line);
         var _highlighted = scm_repl__highlight(_tokens);
 
         // Build spans: prompt + highlighted tokens
@@ -757,7 +383,7 @@ function scm_repl__submit() {
         return;
     }
 
-    if (scm_repl__complete(_full)) {
+    if (scm_sexpr_complete(_full)) {
         // Complete → request eval
         scm_repl__echo_input(_full);
         scm_repl__history_push(_full);
@@ -773,7 +399,7 @@ function scm_repl__submit() {
 function scm_repl__newline() {
     scm_repl__sync_buf();
     var _full = scm_repl__join_lines();
-    var _indent_n = scm_repl__auto_indent(_full);
+    var _indent_n = scm_sexpr_auto_indent(_full);
     var _indent_str = "";
     repeat (_indent_n) { _indent_str += " "; }
     // Split current line at cursor
@@ -853,22 +479,24 @@ function scm_repl__key(_which) {
 // ═══════════════════════════════════════════════════════════════════
 
 /// Check if a repeating key should fire this frame.
-/// Delegates to time-based TTY key repeat (frame-rate independent).
+/// Delegates to time-based input layer (frame-rate independent).
 function scm_repl__check_key(_which) {
     var _vk;
     switch (_which) {
         case "left":   _vk = vk_left;      break;
         case "right":  _vk = vk_right;     break;
+        case "up":     _vk = vk_up;        break;
+        case "down":   _vk = vk_down;      break;
         case "back":   _vk = vk_backspace; break;
         case "delete": _vk = vk_delete;    break;
         default: return false;
     }
-    return scm_tty_key_tick(_vk);
+    return scm_input_key_tick(_vk);
 }
 
 /// Reset all key repeat state.
 function scm_repl__reset_key_state() {
-    scm_tty_reset_keys();
+    scm_input_reset_keys();
 }
 
 /// Map a base character to its Shift-modified equivalent (US/CN layout).
@@ -900,172 +528,243 @@ function scm_repl__shift_char(_c) {
     }
 }
 
-/// Clear all keyboard state to prevent input leaking to the game.
+/// Handle keyboard input when overlay is active.
+/// All input goes to the overlay, not the REPL buffer.
+function scm_repl__step_overlay_input() {
+    // Consume keyboard_string
+    var _typed = keyboard_string;
+    keyboard_string = "";
+
+    // Character input → append to overlay input
+    if (string_length(_typed) > 0 && !keyboard_check(vk_control)) {
+        if (keyboard_check(vk_shift)) {
+            var _remapped = "";
+            for (var _k = 1; _k <= string_length(_typed); _k++) {
+                var _c = string_char_at(_typed, _k);
+                if (ord(_c) <= 0x7E) {
+                    _remapped += scm_repl__shift_char(string_upper(_c));
+                } else {
+                    _remapped += _c;
+                }
+            }
+            _typed = _remapped;
+        }
+        // Filter to printable chars
+        var _clean = "";
+        for (var _k = 1; _k <= string_length(_typed); _k++) {
+            var _o = ord(string_char_at(_typed, _k));
+            if ((_o >= 0x20 && _o <= 0x7E) || _o >= 0x80) {
+                _clean += string_char_at(_typed, _k);
+            }
+        }
+        if (string_length(_clean) > 0) {
+            scm_comp_overlay_set_input(global.__comp_ov_input + _clean);
+        }
+    }
+
+    // Backspace → remove last char
+    if (scm_repl__check_key("back")) {
+        var _inp = global.__comp_ov_input;
+        if (string_length(_inp) > 0) {
+            scm_comp_overlay_set_input(string_copy(_inp, 1, string_length(_inp) - 1));
+        }
+    }
+
+    // Navigation
+    if (keyboard_check_pressed(vk_up))   scm_comp_overlay_nav(-1);
+    if (keyboard_check_pressed(vk_down)) scm_comp_overlay_nav(1);
+    if (keyboard_check_pressed(vk_pageup))   scm_comp_overlay_nav(-global.__comp_ov_per_page);
+    if (keyboard_check_pressed(vk_pagedown)) scm_comp_overlay_nav(global.__comp_ov_per_page);
+
+    // Enter → accept
+    if (keyboard_check_pressed(vk_enter)) {
+        var _result = scm_comp_overlay_accept();
+        if (_result != undefined) {
+            scm_repl__overlay_insert(_result);
+        } else {
+            scm_comp_overlay_close();
+        }
+    }
+
+    // Escape → close
+    if (keyboard_check_pressed(vk_escape)) {
+        scm_comp_overlay_close();
+    }
+
+    // Tab → accept (same as Enter)
+    if (keyboard_check_pressed(vk_tab)) {
+        var _result = scm_comp_overlay_accept();
+        if (_result != undefined) {
+            scm_repl__overlay_insert(_result);
+        } else {
+            scm_comp_overlay_close();
+        }
+    }
+}
+
+/// Insert overlay result into the REPL buffer.
+function scm_repl__overlay_insert(_result) {
+    var _text = _result.text;
+
+    // Auto-wrap in quotes if needed (bare arg with completer → pool result)
+    if (_result.needs_quote_wrap) {
+        _text = chr(34) + _text + chr(34);
+    }
+
+    // Replace from word_start to cursor
+    var _ws = _result.word_start;
+    var _buf = global.__repl_buf;
+    var _before = string_copy(_buf, 1, _ws);
+    var _after = string_copy(_buf, global.__repl_cursor + 1,
+                             string_length(_buf) - global.__repl_cursor);
+
+    // If we're inside a string context, replace from str_start to cursor
+    // (word_start is already set correctly by overlay_open)
+    global.__repl_buf = _before + _text + _after;
+    global.__repl_cursor = _ws + string_length(_text);
+}
+
+/// Clear keyboard state to prevent input leaking to the game.
+/// NOTE: io_clear() is NOT used here — it resets keyboard_check() hold state,
+/// which breaks modifier keys (Ctrl, Shift) held across frames.
+/// Game input is suppressed via global.consoleEnabled instead.
 function scm_repl__trap_keys() {
     keyboard_string = "";
     keyboard_lastkey = vk_nokey;
     keyboard_lastchar = "";
-    io_clear();
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  Section 12b: Tab completion
+//  Section 12b: Tab completion (delegates to scm_comp.gml)
 // ═══════════════════════════════════════════════════════════════════
 
-/// Collect all binding names from an environment chain (includes parent scopes).
-function scm_repl__env_names(_env) {
-    var _names = [];
-    var _seen = ds_map_create();
-    while (_env != undefined) {
-        var _keys = variable_struct_get_names(_env.bindings);
-        for (var _i = 0; _i < array_length(_keys); _i++) {
-            if (!ds_map_exists(_seen, _keys[_i])) {
-                ds_map_set(_seen, _keys[_i], true);
-                array_push(_names, _keys[_i]);
-            }
-        }
-        _env = _env.parent;
-    }
-    ds_map_destroy(_seen);
-    return _names;
-}
-
-/// Return the longest common prefix of two strings.
-function scm_repl__common_prefix(_a, _b) {
-    var _la = string_length(_a);
-    var _lb = string_length(_b);
-    var _n = min(_la, _lb);
-    for (var _i = 1; _i <= _n; _i++) {
-        if (string_char_at(_a, _i) != string_char_at(_b, _i)) {
-            return string_copy(_a, 1, _i - 1);
-        }
-    }
-    return string_copy(_a, 1, _n);
-}
-
-/// Tab-complete the symbol at cursor from environment bindings.
+/// Handle Tab press.
+///
+/// PREFIX mode (default, bash-style):
+///   1. Collect prefix-matched candidates
+///   2. Compute LCP (longest common prefix) of all matches
+///   3. If LCP extends beyond current input → auto-complete to LCP, no popup
+///   4. If LCP == prefix (fork point reached) → show popup
+///   5. Tab again with popup open → accept selected
+///
+/// FUZZY mode:
+///   1. Fuzzy-score all candidates, show popup
+///   2. Tab again → accept selected
 function scm_repl__tab_complete() {
+    if (scm_comp_is_active()) {
+        if (scm_comp_is_segment_mode()) {
+            // Segment mode: drill if drillable, accept if leaf
+            var _sel = global.__comp_sel;
+            var _m = global.__comp_matches;
+            if (_sel < array_length(_m)
+                && variable_struct_exists(_m[_sel], "drillable")
+                && _m[_sel].drillable) {
+                scm_repl__drill_segment();
+            } else {
+                scm_repl__accept_completion();
+            }
+            return;
+        }
+        // Item mode: accept current selection
+        scm_repl__accept_completion();
+        return;
+    }
+
+    // Activate completion
+    scm_comp_activate(global.__repl_buf, global.__repl_cursor);
+    if (!scm_comp_is_active()) return;
+
+    // Single match → auto-accept immediately
+    if (scm_comp_count() == 1) {
+        scm_repl__accept_completion();
+        return;
+    }
+
+    // Try LCP extension, then maybe trie segment
+    scm_repl__try_lcp_extend();
+    // Popup stays open (item or segment mode)
+}
+
+/// Drill into a selected segment: extend prefix, re-activate completion.
+function scm_repl__drill_segment() {
+    var _seg_name = scm_comp_selected();
+    if (_seg_name == "") { scm_comp_dismiss(); return; }
+
+    // Replace current prefix with segment name in buffer
     var _buf = global.__repl_buf;
     var _cur = global.__repl_cursor;
-    if (_cur == 0) return;
+    var _start = global.__comp_word_start;
+    var _before = string_copy(_buf, 1, _start);
+    var _after = string_copy(_buf, _cur + 1, string_length(_buf) - _cur);
+    global.__repl_buf = _before + _seg_name + _after;
+    global.__repl_cursor = _start + string_length(_seg_name);
 
-    // Extract prefix: scan backwards from cursor to find word boundary
-    var _start = _cur;
-    while (_start > 0) {
-        var _c = string_char_at(_buf, _start);
-        if (_c == " " || _c == "(" || _c == ")" || _c == "\t"
-            || _c == "'" || _c == "`" || _c == chr(34)) break;
-        _start--;
-    }
-    var _prefix = string_copy(_buf, _start + 1, _cur - _start);
-    if (_prefix == "") return;
+    // Dismiss and re-activate with extended prefix
+    scm_comp_dismiss();
+    scm_comp_activate(global.__repl_buf, global.__repl_cursor);
+    if (!scm_comp_is_active()) return;
 
-    // Collect matching names from env + keywords
-    if (!variable_global_exists("scm_env")) return;
-    var _all_names = scm_repl__env_names(global.scm_env);
-    // Also include keywords (define, lambda, let, etc.)
-    var _kw_key = ds_map_find_first(global.__repl_keywords);
-    while (_kw_key != undefined) {
-        array_push(_all_names, _kw_key);
-        _kw_key = ds_map_find_next(global.__repl_keywords, _kw_key);
+    // Single match after drill → auto-accept
+    if (scm_comp_count() == 1) {
+        scm_repl__accept_completion();
+        return;
     }
 
-    // Prefix-aware filtering:
-    // If user typed "gml:" → only match gml:* names
-    // If user typed anything WITHOUT ":" → hide gml:* names (reduce noise)
-    var _has_colon = (string_pos(":", _prefix) > 0);
+    // Try LCP extension, then maybe trie segment
+    scm_repl__try_lcp_extend();
+}
 
-    // If prefix is a namespace query (obj:..., spr:..., etc.),
-    // use patricia trie for fast completion instead of linear scan.
-    if (_has_colon) {
-        var _colon_pos = string_pos(":", _prefix);
-        var _ns = string_copy(_prefix, 1, _colon_pos - 1);
-        var _trie = scm_meta_get_trie(_ns);
-        if (!is_undefined(_trie)) {
-            // Extract the part after "ns:" and walk the trie
-            var _suffix = string_copy(_prefix, _colon_pos + 1, string_length(_prefix) - _colon_pos);
-            var _sub = scm_meta_trie_walk(_trie, _suffix);
-            if (!is_undefined(_sub)) {
-                var _completions = scm_meta_trie_collect(_sub, _prefix, 200);
-                for (var _j = 0; _j < array_length(_completions); _j++) {
-                    array_push(_all_names, _completions[_j]);
-                }
-            }
+/// Try LCP extension: if LCP exceeds prefix, apply it and re-activate.
+/// Then attempt trie segment drill-down if still at a fork point.
+function scm_repl__try_lcp_extend() {
+    var _lcp = scm_comp_lcp();
+    var _prefix = global.__comp_prefix;
+    if (string_length(_lcp) > string_length(_prefix)) {
+        scm_repl__apply_partial(_lcp);
+        scm_comp_activate(global.__repl_buf, global.__repl_cursor);
+        if (!scm_comp_is_active()) return;
+        if (scm_comp_count() == 1) {
+            scm_repl__accept_completion();
+            return;
         }
     }
+    scm_comp__maybe_trie_segment();
+}
 
-    var _matches = [];
-    var _plen = string_length(_prefix);
-    for (var _i = 0; _i < array_length(_all_names); _i++) {
-        var _name = _all_names[_i];
-        if (string_copy(_name, 1, _plen) == _prefix) {
-            // Skip gml:* names when user hasn't typed a colon
-            if (!_has_colon && string_copy(_name, 1, 4) == "gml:") continue;
-            array_push(_matches, _name);
-        }
-    }
+/// Apply a partial completion (LCP) to the input buffer without dismissing.
+function scm_repl__apply_partial(_text) {
+    var _buf = global.__repl_buf;
+    var _cur = global.__repl_cursor;
+    var _start = global.__comp_word_start;
 
-    var _mn = array_length(_matches);
-    if (_mn == 0) return;
+    var _before = string_copy(_buf, 1, _start);
+    var _after = string_copy(_buf, _cur + 1, string_length(_buf) - _cur);
+    global.__repl_buf = _before + _text + _after;
+    global.__repl_cursor = _start + string_length(_text);
 
-    if (_mn == 1) {
-        // Single match: complete in-place
-        var _completion = string_copy(_matches[0], _plen + 1, string_length(_matches[0]) - _plen);
-        global.__repl_buf = scm_repl__str_insert(_buf, _cur, _completion);
-        global.__repl_cursor += string_length(_completion);
-    } else {
-        // Multiple matches: complete to longest common prefix
-        var _common = _matches[0];
-        for (var _i = 1; _i < _mn; _i++) {
-            _common = scm_repl__common_prefix(_common, _matches[_i]);
-        }
-        if (string_length(_common) > _plen) {
-            var _completion = string_copy(_common, _plen + 1, string_length(_common) - _plen);
-            global.__repl_buf = scm_repl__str_insert(_buf, _cur, _completion);
-            global.__repl_cursor += string_length(_completion);
-        }
-        // Show candidates with adaptive column layout
-        // Find longest name to compute column width
-        var _max_len = 0;
-        for (var _i = 0; _i < _mn; _i++) {
-            var _nl = string_length(_matches[_i]);
-            if (_nl > _max_len) _max_len = _nl;
-        }
-        var _col_w = _max_len + 2; // 2-char gap between columns
-        var _term_cols = scm_tty_cols(display_get_gui_width() - 32);
-        var _cols = max(1, floor(_term_cols / _col_w));
+    // Update prefix and re-filter (narrow the candidate list)
+    global.__comp_prefix = _text;
+    scm_comp_update(global.__repl_buf, global.__repl_cursor);
+    // Dismiss popup — user can Tab again to see the fork
+    scm_comp_dismiss();
+}
 
-        var _row = "";
-        var _col = 0;
-        var _shown = 0;
-        for (var _i = 0; _i < _mn; _i++) {
-            if (_shown >= 40) {
-                if (_row != "") scm_repl__add_output(_row, global.__repl_c_comment);
-                scm_repl__add_output("  ...(" + string(_mn) + " total)", global.__repl_c_comment);
-                _row = "";
-                _col = 0;
-                break;
-            }
-            if (_col > 0) {
-                // Pad previous entry to fixed column width
-                var _pad_n = _col_w - string_length(_matches[_i - 1]);
-                var _pad_s = "";
-                for (var _p = 0; _p < _pad_n; _p++) _pad_s += " ";
-                _row += _pad_s;
-            }
-            _row += _matches[_i];
-            _col++;
-            _shown++;
-            if (_col >= _cols) {
-                scm_repl__add_output(_row, global.__repl_c_comment);
-                _row = "";
-                _col = 0;
-            }
-        }
-        if (_row != "") {
-            scm_repl__add_output(_row, global.__repl_c_comment);
-        }
-    }
+/// Accept the currently selected completion into the input buffer.
+function scm_repl__accept_completion() {
+    var _sel = scm_comp_selected();
+    if (_sel == "") { scm_comp_dismiss(); return; }
+
+    var _buf = global.__repl_buf;
+    var _cur = global.__repl_cursor;
+    var _start = global.__comp_word_start;
+
+    // Replace prefix with full selected name
+    var _before = string_copy(_buf, 1, _start);
+    var _after = string_copy(_buf, _cur + 1, string_length(_buf) - _cur);
+    global.__repl_buf = _before + _sel + _after;
+    global.__repl_cursor = _start + string_length(_sel);
+
+    scm_comp_dismiss();
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1180,7 +879,7 @@ function scm_repl__exec_command(_cmd) {
                 scm_repl__add_output(_err_lines[_j], global.__repl_c_error);
             }
         } else if (_result.t != SCM_VOID) {
-            scm_repl__add_output(scm_write_str(_result), global.__repl_c_result);
+            scm_repl__add_output(scm_inspect_str(_result), global.__repl_c_result);
         }
         return;
     }
@@ -1248,7 +947,7 @@ function scm_repl__get_input_tokens() {
     if (global.__repl_token_cache_buf == global.__repl_buf) {
         return global.__repl_token_cache_tok;
     }
-    var _tokens = scm_repl__highlight(scm_repl__tokenize(global.__repl_buf));
+    var _tokens = scm_repl__highlight(scm_lex_tokenize(global.__repl_buf));
     global.__repl_token_cache_buf = global.__repl_buf;
     global.__repl_token_cache_tok = _tokens;
     return _tokens;
@@ -1258,35 +957,37 @@ function scm_repl__get_input_tokens() {
 //  Section 14: Draw functions
 // ═══════════════════════════════════════════════════════════════════
 
-/// Draw colored text (uniform color, 4 corners). Delegates to TTY.
+/// Draw colored text (uniform color). Delegates to UI layer.
 function scm_repl__draw_text(_x, _y, _text, _color, _alpha) {
-    scm_tty_draw_text(_x, _y, _text, _color, _alpha);
+    scm_ui_text_alpha(_x, _y, _text, _color, _alpha);
 }
 
-/// Draw output entries with wrapping and scroll support. Delegates to TTY.
+/// Draw output entries with wrapping and scroll support. Delegates to UI layer.
 function scm_repl__draw_output(_x0, _start_y, _max_w, _max_h) {
-    scm_tty_draw_output(_x0, _start_y, _max_w, _max_h);
+    scm_ui_draw_output(_x0, _start_y, _max_w, _max_h);
 }
 
-/// Draw input line with syntax highlighting and matched paren.
-function scm_repl__draw_input(_x0, _y) {
-    var _prompt = (global.__repl_line_idx == 0) ? "> " : "... ";
-    var _cw = scm_tty_char_w(); // monospace: exact char width
+/// Draw a single line with syntax highlighting and optional matched paren.
+/// _line_text: the line content (without prompt)
+/// _line_idx: 0-based line index (for prompt selection)
+/// _match_pos: char offset within this line to highlight, or -1
+/// _x0, _y: draw position
+function scm_repl__draw_line_highlighted(_x0, _y, _line_text, _line_idx, _match_pos) {
+    var _prompt = (_line_idx == 0) ? "> " : "... ";
+    var _cw = scm_tty_char_w();
 
     // Draw prompt
     scm_repl__draw_text(_x0, _y, _prompt, global.__repl_c_prompt, 1.0);
-    var _prompt_chars = string_length(_prompt);
-    var _xx = _x0 + _prompt_chars * _cw;
+    var _xx = _x0 + string_length(_prompt) * _cw;
 
-    // Get highlighted tokens
-    var _tokens = scm_repl__get_input_tokens();
-    var _tn = array_length(_tokens);
-
-    // Find matching paren
-    var _match_pos = -1;
-    if (global.__repl_cursor > 0) {
-        _match_pos = scm_repl__match_paren(global.__repl_buf, global.__repl_cursor - 1);
+    // Tokenize and highlight
+    var _tokens;
+    if (_line_idx == global.__repl_line_idx) {
+        _tokens = scm_repl__get_input_tokens();
+    } else {
+        _tokens = scm_repl__highlight(scm_lex_tokenize(_line_text));
     }
+    var _tn = array_length(_tokens);
 
     // Draw tokens with optional match highlight
     var _char_pos = 0;
@@ -1327,14 +1028,14 @@ function scm_repl__draw_input(_x0, _y) {
     }
 }
 
-/// Draw blinking cursor.
+/// Draw blinking cursor as a thin vertical line.
 function scm_repl__draw_cursor(_x0, _y) {
     var _prompt = (global.__repl_line_idx == 0) ? "> " : "... ";
     var _cw = scm_tty_char_w();
+    var _line_h = scm_tty_line_h();
     var _buf_before = string_copy(global.__repl_buf, 1, global.__repl_cursor);
     var _cursor_x = _x0 + (string_length(_prompt) + scm_repl__display_width(_buf_before)) * _cw;
-    var _blink = abs(sin(current_time / 300));
-    scm_repl__draw_text(_cursor_x - 1, _y, "|", global.__repl_c_white, _blink);
+    scm_ui_cursor(_cursor_x, _y, _line_h, global.__repl_c_white, 300);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1343,8 +1044,15 @@ function scm_repl__draw_cursor(_x0, _y) {
 
 /// Process keyboard input. Called only when REPL is visible.
 function scm_repl__step_input() {
-    // Character input
+    // ── Overlay mode: intercept all input ───────────────────────
+    if (scm_comp_overlay_is_active()) {
+        scm_repl__step_overlay_input();
+        scm_repl__trap_keys();
+        return;
+    }
+
     var _ctrl = keyboard_check(vk_control);
+    var _popup = scm_comp_is_active();
 
     // Character input.
     // Consume keyboard_string every frame to prevent accumulation.
@@ -1369,21 +1077,60 @@ function scm_repl__step_input() {
         }
         scm_repl__type_chars(_typed);
         scm_tty_scroll_to_bottom();
+        // Update popup filter as user types
+        if (_popup) {
+            if (global.__comp_segment_mode) {
+                scm_comp_dismiss();
+            } else {
+                scm_comp_update(global.__repl_buf, global.__repl_cursor);
+            }
+        }
     }
 
     // Key repeat keys (time-based via TTY layer)
-    if (scm_repl__check_key("left"))   scm_repl__key("left");
-    if (scm_repl__check_key("right"))  scm_repl__key("right");
-    if (scm_repl__check_key("back"))   scm_repl__key("backspace");
-    if (scm_repl__check_key("delete")) scm_repl__key("delete");
+    if (scm_repl__check_key("left"))  { scm_repl__key("left");  if (_popup) scm_comp_dismiss(); }
+    if (scm_repl__check_key("right")) { scm_repl__key("right"); if (_popup) scm_comp_dismiss(); }
+    if (scm_repl__check_key("back")) {
+        scm_repl__key("backspace");
+        if (_popup) {
+            if (global.__comp_segment_mode) {
+                scm_comp_dismiss();
+            } else {
+                scm_comp_update(global.__repl_buf, global.__repl_cursor);
+            }
+        }
+    }
+    if (scm_repl__check_key("delete")) {
+        scm_repl__key("delete");
+        if (_popup) {
+            if (global.__comp_segment_mode) {
+                scm_comp_dismiss();
+            } else {
+                scm_comp_update(global.__repl_buf, global.__repl_cursor);
+            }
+        }
+    }
 
     // Non-repeat special keys
-    if (keyboard_check_pressed(vk_home))   scm_repl__key("home");
-    if (keyboard_check_pressed(vk_end))    scm_repl__key("end");
+    if (keyboard_check_pressed(vk_home)) { scm_repl__key("home"); if (_popup) scm_comp_dismiss(); }
+    if (keyboard_check_pressed(vk_end))  { scm_repl__key("end");  if (_popup) scm_comp_dismiss(); }
+
+    // Escape — dismiss popup (or could be used for other things later)
+    if (keyboard_check_pressed(vk_escape)) {
+        if (_popup) scm_comp_dismiss();
+    }
 
     // Enter / Shift+Enter
     if (keyboard_check_pressed(vk_enter)) {
-        if (keyboard_check(vk_shift)) {
+        if (_popup) {
+            if (global.__comp_segment_mode) {
+                // Segment mode: drill (same as Tab)
+                scm_repl__drill_segment();
+            } else {
+                // Item mode: accept selected completion
+                scm_repl__accept_completion();
+            }
+        } else if (keyboard_check(vk_shift)) {
             scm_repl__key("shift-enter");
         } else {
             scm_repl__key("enter");
@@ -1391,9 +1138,15 @@ function scm_repl__step_input() {
         }
     }
 
-    // History navigation
-    if (keyboard_check_pressed(vk_up))   scm_repl__key("up");
-    if (keyboard_check_pressed(vk_down)) scm_repl__key("down");
+    // Up / Down — popup navigation or history (with key repeat)
+    if (scm_repl__check_key("up")) {
+        if (_popup) scm_comp_prev();
+        else scm_repl__key("up");
+    }
+    if (scm_repl__check_key("down")) {
+        if (_popup) scm_comp_next();
+        else scm_repl__key("down");
+    }
 
     // ── Ctrl shortcuts ──
     if (_ctrl) {
@@ -1401,10 +1154,12 @@ function scm_repl__step_input() {
             if (clipboard_has_text()) {
                 scm_repl__paste(clipboard_get_text());
                 scm_tty_scroll_to_bottom();
+                if (_popup) scm_comp_dismiss();
             }
         }
         if (keyboard_check_pressed(ord("L"))) {
             scm_repl__clear_output();
+            if (_popup) scm_comp_dismiss();
         }
         if (keyboard_check_pressed(ord("C"))) {
             var _cur = scm_repl__join_lines();
@@ -1412,18 +1167,25 @@ function scm_repl__step_input() {
                 scm_repl__add_output("> " + _cur + "^C", global.__repl_c_comment);
             }
             scm_repl__reset_input();
+            if (_popup) scm_comp_dismiss();
         }
         if (keyboard_check_pressed(ord("A"))) {
             global.__repl_cursor = 0;
+            if (_popup) scm_comp_dismiss();
         }
         if (keyboard_check_pressed(ord("E"))) {
             global.__repl_cursor = string_length(global.__repl_buf);
+            if (_popup) scm_comp_dismiss();
         }
     }
 
     // Tab completion
-    if (keyboard_check_pressed(vk_tab)) {
+    if (keyboard_check_pressed(vk_tab) && !_ctrl) {
         scm_repl__tab_complete();
+    }
+    // F3: open overlay search
+    if (keyboard_check_pressed(vk_f3)) {
+        scm_comp_overlay_open(global.__repl_buf, global.__repl_cursor);
     }
 
     // Scroll: PgUp / PgDn
@@ -1465,7 +1227,7 @@ function scm_repl__do_eval(_code) {
             scm_repl__add_output(_err_lines[_j], global.__repl_c_error);
         }
     } else if (_result.t != SCM_VOID) {
-        scm_repl__add_output(scm_write_str(_result), global.__repl_c_result);
+        scm_repl__add_output(scm_inspect_str(_result), global.__repl_c_result);
     }
 }
 
@@ -1480,7 +1242,7 @@ function scm_repl__init_keywords() {
         "define", "lambda", "if", "cond", "case", "when", "unless",
         "let", "let*", "letrec", "begin", "do", "set!",
         "and", "or", "quote", "quasiquote", "unquote", "unquote-splicing",
-        "define-syntax", "syntax-rules"
+        "define-syntax", "syntax-rules", "define-macro"
     ];
     for (var _i = 0; _i < array_length(_kws); _i++) {
         ds_map_set(_m, _kws[_i], true);
@@ -1548,8 +1310,20 @@ function scm_repl_create() {
         scm_trace("[scm-repl] CJK font not found, Chinese text will not render");
     }
 
-    // Initialize TTY layer (metrics, output buffer, key repeat, scroll)
+    // Initialize input layer (key repeat)
+    scm_input_init();
+
+    // Initialize TTY layer (metrics, output buffer, scroll)
     scm_tty_init(global.__repl_font, global.__repl_font_cjk);
+
+    // Initialize UI draw primitives (state stack, text rendering)
+    scm_ui_init();
+
+    // Initialize completion engine (provider registry + popup state)
+    scm_comp_init();
+
+    // Load string-context completion configuration (asset pools, completers)
+    scm_comp__load_init();
 
     // Visibility
     global.scm_repl_visible = false;
@@ -1594,6 +1368,7 @@ function scm_repl_destroy() {
     if (ds_exists(global.__repl_keywords, ds_type_map)) {
         ds_map_destroy(global.__repl_keywords);
     }
+    scm_input_destroy();
     scm_tty_destroy();
 }
 
@@ -1637,47 +1412,42 @@ function scm_repl_draw() {
 
     var _w = display_get_gui_width();
     var _h = display_get_gui_height();
-    var _prev_font = draw_get_font();
-    var _prev_alpha = draw_get_alpha();
-    var _prev_color = draw_get_colour();
 
-    draw_set_font(global.__repl_font);
+    scm_ui_begin(global.__repl_font);
 
     var _line_h = scm_tty_line_h();
     var _pad = 16;
     var _x0 = _pad;
-    var _y_bottom = _h - _pad;
+    var _y_bottom = _h - _pad - _line_h;
     var _max_w = _w - _pad * 2;
 
     // Background overlay
-    draw_set_alpha(0.85);
-    draw_rectangle_colour(0, 0, _w, _h,
-        global.__repl_c_black, global.__repl_c_black,
-        global.__repl_c_black, global.__repl_c_black, false);
-    draw_set_alpha(1.0);
+    scm_ui_fill(0, 0, _w, _h, global.__repl_c_black, 0.85);
+
+    // Cross-line bracket matching: compute match once for all lines
+    scm_repl__sync_buf();
+    var _full = scm_repl__join_lines();
+    var _gpos = scm_repl__global_cursor_pos();
+    var _match_line = -1;
+    var _match_char = -1;
+    if (_gpos > 0) {
+        var _mpos = scm_sexpr_match_paren(_full, _gpos - 1);
+        if (_mpos >= 0) {
+            var _ml = scm_repl__pos_to_line_offset(_mpos);
+            _match_line = _ml[0];
+            _match_char = _ml[1];
+        }
+    }
 
     // Draw all input lines bottom-up
     var _total_lines = array_length(global.__repl_lines);
     var _cur_idx = global.__repl_line_idx;
     for (var _li = _total_lines - 1; _li >= 0; _li--) {
         var _ly = _y_bottom - (_total_lines - 1 - _li) * _line_h;
+        var _li_match = (_li == _match_line) ? _match_char : -1;
+        scm_repl__draw_line_highlighted(_x0, _ly, global.__repl_lines[_li], _li, _li_match);
         if (_li == _cur_idx) {
-            // Current editing line: use draw_input (syntax + matched paren) + cursor
-            scm_repl__draw_input(_x0, _ly);
             scm_repl__draw_cursor(_x0, _ly);
-        } else {
-            // Non-current line: syntax highlight only
-            var _mprefix = (_li == 0) ? "> " : "... ";
-            var _mtokens = scm_repl__highlight(scm_repl__tokenize(global.__repl_lines[_li]));
-            var _cw = scm_tty_char_w();
-            var _mxx = _x0;
-            scm_repl__draw_text(_mxx, _ly, _mprefix, global.__repl_c_prompt, 1.0);
-            _mxx += string_length(_mprefix) * _cw;
-            for (var _mj = 0; _mj < array_length(_mtokens); _mj++) {
-                var _mt = _mtokens[_mj];
-                scm_repl__draw_text(_mxx, _ly, _mt[1], _mt[0], 1.0);
-                _mxx += string_length(_mt[1]) * _cw;
-            }
         }
     }
 
@@ -1695,8 +1465,36 @@ function scm_repl_draw() {
         scm_repl__draw_text(_w - _pad - _ind_w, _y_bottom, _ind, global.__repl_c_comment, 0.7);
     }
 
+    // Completion popup — drawn last so it renders on top of everything
+    if (scm_comp_is_active()) {
+        var _cur_ly = _y_bottom - (_total_lines - 1 - _cur_idx) * _line_h;
+        var _prompt_w = (global.__repl_line_idx == 0) ? 2 : 4;
+        var _cw = scm_tty_char_w();
+        var _word_x = _x0 + (_prompt_w + scm_repl__display_width(
+            string_copy(global.__repl_buf, 1, global.__comp_word_start))) * _cw;
+        scm_comp_draw_popup(_word_x, _cur_ly, _cw, _line_h, {
+            bg:       global.__repl_c_black,
+            bg_sel:   make_colour_rgb(40, 55, 90),
+            text:     global.__repl_c_default,
+            text_sel: global.__repl_c_white,
+            text_dim: global.__repl_c_comment,
+            border:   global.__repl_c_comment
+        });
+    }
+
+    // Overlay (F3) — drawn on top of everything
+    if (scm_comp_overlay_is_active()) {
+        var _cw = scm_tty_char_w();
+        scm_comp_overlay_draw(_cw, _line_h, {
+            bg:       global.__repl_c_black,
+            bg_sel:   make_colour_rgb(40, 55, 90),
+            text:     global.__repl_c_default,
+            text_sel: global.__repl_c_white,
+            text_dim: global.__repl_c_comment,
+            border:   global.__repl_c_comment
+        });
+    }
+
     // Restore draw state
-    draw_set_font(_prev_font);
-    draw_set_alpha(_prev_alpha);
-    draw_set_colour(_prev_color);
+    scm_ui_end();
 }

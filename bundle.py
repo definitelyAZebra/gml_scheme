@@ -24,10 +24,14 @@ SRC_ORDER = [
     "scm_core.gml",
     "scm_gml_builtins.gml",
     "scm_bridge.gml",
-    "scm_meta.gml",
     "scm_init.gml",
     "scm_help.gml",
+    "scm_input.gml",
     "scm_tty.gml",
+    "scm_ui.gml",
+    "scm_lex.gml",
+    "scm_sexpr.gml",
+    "scm_comp.gml",
     "scm_repl_shell.gml",
 ]
 
@@ -60,7 +64,9 @@ def _load_scm_as_gml_string(src_dir: Path, filename: str) -> str:
 
 def bundle(src_dir: Path, out_path: Path) -> None:
     prelude_str = _load_prelude_as_gml_string(src_dir)
+    stdlib_str = _load_scm_as_gml_string(src_dir, "stdlib.scm")
     repl_str = _load_scm_as_gml_string(src_dir, "scm_repl.scm")
+    comp_init_str = _load_scm_as_gml_string(src_dir, "comp-init.scm")
 
     parts: list[str] = []
     parts.append("/// ═══════════════════════════════════════════════════════════")
@@ -79,8 +85,11 @@ def bundle(src_dir: Path, out_path: Path) -> None:
         text = filepath.read_text(encoding="utf-8")
         if filename == "scm_init.gml":
             text = text.replace('"@@PRELUDE@@"', prelude_str)
+            text = text.replace('"@@STDLIB@@"', stdlib_str)
         if filename == "scm_repl_shell.gml":
             text = text.replace('"@@REPL@@"', repl_str)
+        if filename == "scm_comp.gml":
+            text = text.replace('"@@COMP_INIT@@"', comp_init_str)
         file_texts[filename] = text
 
     # ── Emit source sections ─────────────────────────────────────────
@@ -155,7 +164,6 @@ def copy_build_assets(project_root: Path, build_dir: Path) -> None:
     scm_data_dir.mkdir(parents=True, exist_ok=True)
 
     meta_dir = project_root / "data" / "meta"
-    trie_dir = project_root / "data" / "trie"
 
     copied = 0
 
@@ -165,22 +173,17 @@ def copy_build_assets(project_root: Path, build_dir: Path) -> None:
         "rooms.json", "scripts.json", "functions.json",
         "obj_tree.json",
     ]
+    meta_files.append("globals.json")
     for name in meta_files:
         src = meta_dir / name
         if src.exists():
             shutil.copy2(src, scm_data_dir / name)
             copied += 1
 
-    # Trie JSON files
-    if trie_dir.exists():
-        for src in sorted(trie_dir.glob("trie_*.json")):
-            shutil.copy2(src, scm_data_dir / src.name)
-            copied += 1
-
     if copied:
         print(f"Copied {copied} data files → {scm_data_dir}")
     else:
-        print(f"WARNING: No data files found in {meta_dir} or {trie_dir}")
+        print(f"WARNING: No data files found in {meta_dir}")
 
 
 def main() -> None:

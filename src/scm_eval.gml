@@ -3,6 +3,10 @@
 /// Tree-walking interpreter with proper tail-call optimization.
 /// The main eval loop uses a while(true) trampoline: at tail positions
 /// we reassign _expr/_env and continue instead of recursing.
+///
+/// !! UMT BYTECODE 17 — FORBIDDEN SYNTAX (build.py lint enforced):
+///    [$]  [?]  [@]  struct_set()  is_instanceof()
+///    Use: variable_struct_get/set, ds_map_find_value/set, array_get/set
 /// Errors propagate as SCM_ERR values (no exceptions).
 
 /// Extract a human-readable message from a GML exception struct.
@@ -120,6 +124,17 @@ function scm_eval(_expr, _env) {
                 return scm_lambda(_rest.car, _rest.cdr, _env, undefined);
             }
 
+            if (_form == "case-lambda") {
+                var _clauses = [];
+                var _c = _rest;
+                while (_c.t == SCM_PAIR) {
+                    var _clause = _c.car;  // (params body ...)
+                    array_push(_clauses, { params: _clause.car, body: _clause.cdr });
+                    _c = _c.cdr;
+                }
+                return scm_case_lambda(_clauses, _env, undefined);
+            }
+
             if (_form == "begin") {
                 while (_rest.cdr.t == SCM_PAIR) {
                     var _r = scm_eval(_rest.car, _env);
@@ -141,6 +156,7 @@ function scm_eval(_expr, _env) {
 
             if (_form == "cond") {
                 var _clauses = _rest;
+                var _cond_matched = false;
                 while (_clauses.t == SCM_PAIR) {
                     var _clause = _clauses.car;
                     var _ctest  = _clause.car;
@@ -152,7 +168,8 @@ function scm_eval(_expr, _env) {
                             _cbody = _cbody.cdr;
                         }
                         _expr = _cbody.car;
-                        continue;  // TCO
+                        _cond_matched = true;
+                        break;
                     }
                     var _cval = scm_eval(_ctest, _env);
                     if (_cval.t == SCM_ERR) return _cval;
@@ -171,10 +188,12 @@ function scm_eval(_expr, _env) {
                             _cbody = _cbody.cdr;
                         }
                         _expr = _cbody.car;
-                        continue;  // TCO
+                        _cond_matched = true;
+                        break;
                     }
                     _clauses = _clauses.cdr;
                 }
+                if (_cond_matched) continue;  // TCO — jumps to trampoline
                 return scm_void();
             }
 
@@ -325,9 +344,37 @@ function scm_eval(_expr, _env) {
                 // No clause matched — re-raise
                 return _result;
             }
+
+            // (define-macro (name params ...) body ...)
+            // Non-hygienic Lisp-style macro.  Transformer is stored in
+            // the global macro table, NOT in the lexical environment.
+            if (_form == "define-macro") {
+                var _spec = _rest.car;
+                if (_spec.t != SCM_PAIR)
+                    return scm_err("define-macro: expected (name params ...) but got " + scm_to_string(_spec));
+                var _mname = _spec.car;
+                if (_mname.t != SCM_SYM)
+                    return scm_err("define-macro: name must be a symbol");
+                var _mac = scm_lambda(_spec.cdr, _rest.cdr, _env, _mname.v);
+                variable_struct_set(global.__scm_macros, _mname.v, _mac);
+                return scm_void();
+            }
         }
 
         // ── Function application ────────────────────────────────────
+
+        // Macro expansion — check global macro table BEFORE evaluating head.
+        // This is the standard Lisp approach: macros are identified by name,
+        // not by evaluating the head to a procedure first.
+        if (_head.t == SCM_SYM) {
+            var _mac = variable_struct_get(global.__scm_macros, _head.v);
+            if (!is_undefined(_mac)) {
+                var _expanded = scm_apply(_mac, _rest);
+                if (_expanded.t == SCM_ERR) return _expanded;
+                _expr = _expanded;
+                continue;  // TCO — re-eval expanded form
+            }
+        }
 
         var _fn = scm_eval(_head, _env);
         if (_fn.t == SCM_ERR) return _fn;
@@ -342,6 +389,26 @@ function scm_eval(_expr, _env) {
             if (_bind_err != undefined) return scm_err(_fn.name + ": " + _bind_err);
             _env = _new_env;
             var _body = _fn.body;
+            while (_body.cdr.t == SCM_PAIR) {
+                var _r = scm_eval(_body.car, _env);
+                if (_r.t == SCM_ERR) return _r;
+                _body = _body.cdr;
+            }
+            _expr = _body.car;
+            continue;  // TCO
+        }
+
+        // TCO for case-lambda: match arity, then same as lambda
+        if (_fn.t == SCM_CASE_LAMBDA) {
+            var _nargs = scm_list_len(_args);
+            var _ci = scm__match_case_lambda(_fn.clauses, _nargs);
+            if (_ci < 0) return scm_err(_fn.name + ": no matching clause for " + string(_nargs) + " arguments");
+            var _clause = _fn.clauses[_ci];
+            var _new_env = scm_env_new(_fn.env);
+            var _bind_err = scm__bind_params(_clause.params, _args, _new_env);
+            if (_bind_err != undefined) return scm_err(_fn.name + ": " + _bind_err);
+            _env = _new_env;
+            var _body = _clause.body;
             while (_body.cdr.t == SCM_PAIR) {
                 var _r = scm_eval(_body.car, _env);
                 if (_r.t == SCM_ERR) return _r;
@@ -386,6 +453,16 @@ function scm_apply(_fn, _args) {
         var _bind_err = scm__bind_params(_fn.params, _args, _new_env);
         if (_bind_err != undefined) return scm_err(_fn.name + ": " + _bind_err);
         return scm_eval_body(_fn.body, _new_env);
+    }
+    if (_fn.t == SCM_CASE_LAMBDA) {
+        var _nargs = scm_list_len(_args);
+        var _ci = scm__match_case_lambda(_fn.clauses, _nargs);
+        if (_ci < 0) return scm_err(_fn.name + ": no matching clause for " + string(_nargs) + " arguments");
+        var _clause = _fn.clauses[_ci];
+        var _new_env = scm_env_new(_fn.env);
+        var _bind_err = scm__bind_params(_clause.params, _args, _new_env);
+        if (_bind_err != undefined) return scm_err(_fn.name + ": " + _bind_err);
+        return scm_eval_body(_clause.body, _new_env);
     }
     if (_fn.t == SCM_HANDLE && _fn.ht == SCM_HT_METHOD) {
         try {
@@ -482,6 +559,29 @@ function scm__bind_params(_params, _args, _env) {
     return undefined;
 }
 
+/// Match a case-lambda: find the first clause whose params accept _nargs.
+/// Returns clause index or -1.
+function scm__match_case_lambda(_clauses, _nargs) {
+    var _len = array_length(_clauses);
+    for (var _i = 0; _i < _len; _i++) {
+        var _params = _clauses[_i].params;
+        // Bare symbol → rest args, accepts any arity
+        if (_params.t == SCM_SYM) return _i;
+        // Count required params; check for dotted rest
+        var _required = 0;
+        var _p = _params;
+        while (_p.t == SCM_PAIR) { _required++; _p = _p.cdr; }
+        if (_p.t == SCM_SYM) {
+            // Dotted rest: accepts _required or more
+            if (_nargs >= _required) return _i;
+        } else {
+            // Fixed arity: exact match
+            if (_nargs == _required) return _i;
+        }
+    }
+    return -1;
+}
+
 // ═══════════════════════════════════════════════════════════════════
 //  Special form implementations (only non-inlined ones remain)
 // ═══════════════════════════════════════════════════════════════════
@@ -497,6 +597,9 @@ function scm__eval_define(_rest, _env) {
         if (_val.t == SCM_ERR) return _val;
         // Infer name for anonymous lambdas (first-define-wins)
         if (_val.t == SCM_LAMBDA && _val.name == "<lambda>") {
+            _val.name = _name_str;
+        }
+        if (_val.t == SCM_CASE_LAMBDA && _val.name == "<case-lambda>") {
             _val.name = _name_str;
         }
         scm_env_set(_env, _name_str, _val);

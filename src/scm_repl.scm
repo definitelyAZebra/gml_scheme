@@ -704,7 +704,7 @@
 ; ==================================================================
 
 (define (repl:trap-keys!)
-  (gml:keyboard-string-clear!)
+  (gml:keyboard-string-clear)
   (gml:keyboard-clear *vk-enter*)
   (gml:keyboard-clear *vk-backspace*)
   (gml:keyboard-clear *vk-delete*)
@@ -727,7 +727,7 @@
     ;; Toggle (F1) -- always check, even when hidden
     ((gml:keyboard-check-pressed *vk-f1*)
      (repl:toggle!)
-     (gml:keyboard-string-clear!)
+     (gml:keyboard-string-clear)
      (when *repl-visible* (repl:reset-key-state!))
      #f)
 
@@ -762,7 +762,7 @@
   ;; Character input
   (let ((typed (gml:keyboard-string)))
     (when (> (string-length typed) 0)
-      (gml:keyboard-string-clear!)
+      (gml:keyboard-string-clear)
       (repl:type-chars! typed)))
 
   ;; Key repeat keys
@@ -788,7 +788,7 @@
   ;; Ctrl+V paste
   (when (and (gml:keyboard-check *vk-control*)
              (gml:keyboard-check-pressed *ord-V*)
-             (gml:clipboard-has-text?))
+             (gml:clipboard-has-text))
     (repl:paste! (gml:clipboard-get-text)))
 
   ;; Ctrl+L clear output

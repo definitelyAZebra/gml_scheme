@@ -2,6 +2,10 @@
 ///
 /// Tagged-struct approach: every Scheme value is a GML struct with a .t (type) field.
 /// GMS2.3+ structs are garbage-collected, so no manual memory management needed.
+///
+/// !! UMT BYTECODE 17 — FORBIDDEN SYNTAX (build.py lint enforced):
+///    [$]  [?]  [@]  struct_set()  is_instanceof()
+///    Use: variable_struct_get/set, ds_map_find_value/set, array_get/set
 
 // ── Type tags ────────────────────────────────────────────────────────
 #macro SCM_NIL     0
@@ -15,6 +19,17 @@
 #macro SCM_VOID    8
 #macro SCM_ERR     9
 #macro SCM_HANDLE  10  // opaque GML handle (array, struct, ds_map, etc.)
+#macro SCM_CASE_LAMBDA 11  // case-lambda (multiple arity clauses)
+#macro SCM_PORT    12  // I/O port (string or file)
+#macro SCM_EOF     13  // eof-object singleton
+
+// ── Port direction & kind ───────────────────────────────────────────
+#macro SCM_PORT_IN      0
+#macro SCM_PORT_OUT     1
+#macro SCM_PORT_STRING  0
+#macro SCM_PORT_FILE    1
+#macro SCM_PORT_CONSOLE 2
+#macro SCM_PORT_DEBUG   3   // error port → show_debug_message (line-buffered)
 
 // ── Handle sub-types ────────────────────────────────────────────────
 // Only types that GML can reliably detect at runtime via is_array()/is_struct().
@@ -46,9 +61,29 @@ global.__scm_nil   = { __tag: global.__scm_tag, t: SCM_NIL };
 global.__scm_true  = { __tag: global.__scm_tag, t: SCM_BOOL, v: true };
 global.__scm_false = { __tag: global.__scm_tag, t: SCM_BOOL, v: false };
 global.__scm_void  = { __tag: global.__scm_tag, t: SCM_VOID };
+global.__scm_eof   = { __tag: global.__scm_tag, t: SCM_EOF };
+
+// ── Console port singleton ──────────────────────────────────────────
+// Created early so current-output-port works before scm_init().
+global.__scm_console_out = {
+    __tag: global.__scm_tag, t: SCM_PORT,
+    dir: SCM_PORT_OUT, kind: SCM_PORT_CONSOLE,
+    buf: "", pos: 0, fid: -1, closed: false
+};
+
+// ── Debug (error) port singleton ────────────────────────────────────
+// Maps to show_debug_message, line-buffered like console port.
+global.__scm_debug_out = {
+    __tag: global.__scm_tag, t: SCM_PORT,
+    dir: SCM_PORT_OUT, kind: SCM_PORT_DEBUG,
+    buf: "", pos: 0, fid: -1, closed: false
+};
 
 // ── Symbol intern table ─────────────────────────────────────────────
 global.__scm_sym_table = {};
+
+// ── Global macro table (define-macro writes here) ──────────────────
+global.__scm_macros = {};
 
 // ── Small integer cache (-1 .. 256) ────────────────────────────────
 global.__scm_small_int_lo = -1;
@@ -106,6 +141,26 @@ function scm_lambda(_params, _body, _env, _name) {
              name: (_name != undefined) ? _name : "<lambda>" };
 }
 
+/// Create a case-lambda (multiple arity clauses).
+/// _clauses: GML array of { params, body } structs.
+function scm_case_lambda(_clauses, _env, _name) {
+    return { __tag: global.__scm_tag, t: SCM_CASE_LAMBDA, clauses: _clauses, env: _env,
+             name: (_name != undefined) ? _name : "<case-lambda>" };
+}
+
+function scm_eof() {
+    return global.__scm_eof;
+}
+
+/// Create an I/O port.
+/// _dir: SCM_PORT_IN or SCM_PORT_OUT.
+/// _kind: SCM_PORT_STRING, SCM_PORT_FILE, or SCM_PORT_CONSOLE.
+function scm_port(_dir, _kind) {
+    return { __tag: global.__scm_tag, t: SCM_PORT,
+             dir: _dir, kind: _kind,
+             buf: "", pos: 0, fid: -1, closed: false };
+}
+
 function scm_void() {
     return global.__scm_void;
 }
@@ -140,7 +195,7 @@ function scm_is_truthy(_v) {
 }
 
 function scm_is_proc(_v) {
-    return _v.t == SCM_FN || _v.t == SCM_LAMBDA
+    return _v.t == SCM_FN || _v.t == SCM_LAMBDA || _v.t == SCM_CASE_LAMBDA
         || (_v.t == SCM_HANDLE && _v.ht == SCM_HT_METHOD);
 }
 
@@ -160,6 +215,9 @@ function scm__type_name(_t) {
         case SCM_PAIR:   return "pair";
         case SCM_FN:     return "builtin";
         case SCM_LAMBDA: return "lambda";
+        case SCM_CASE_LAMBDA: return "case-lambda";
+        case SCM_PORT:   return "port";
+        case SCM_EOF:    return "eof";
         case SCM_VOID:   return "void";
         case SCM_ERR:    return "error";
         case SCM_HANDLE: return "handle";
@@ -292,6 +350,7 @@ function scm_deep_unwrap(_scm_val) {
             return _arr;
         case SCM_FN:
         case SCM_LAMBDA:
+        case SCM_CASE_LAMBDA:
             return scm__proc_to_method(_scm_val);
         case SCM_ERR:
             show_debug_message("[scm] deep_unwrap error: " + _scm_val.v);

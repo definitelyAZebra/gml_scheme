@@ -219,28 +219,6 @@ function scm__reader_read_atom(_r) {
         return scm_num(real(_s));
     }
 
-    // ── Namespace prefix desugar ────────────────────────────────
-    // obj:name / spr:name / snd:name / rm:name / scr:name → (gml:asset-get-index "name")
-    // fn:name  / g:name                                    → (gml:variable-global-get "name")
-    var _colon = string_pos(":", _s);
-    if (_colon > 1 && _colon < _atom_len) {
-        var _ns = string_copy(_s, 1, _colon - 1);
-        var _id = string_copy(_s, _colon + 1, _atom_len - _colon);
-        switch (_ns) {
-            case "obj":
-            case "spr":
-            case "snd":
-            case "rm":
-            case "scr":
-                return scm_cons(scm_sym("gml:asset-get-index"),
-                           scm_cons(scm_str(_id), scm_nil()));
-            case "fn":
-            case "g":
-                return scm_cons(scm_sym("gml:variable-global-get"),
-                           scm_cons(scm_str(_id), scm_nil()));
-        }
-    }
-
     return scm_sym(_s);
 }
 

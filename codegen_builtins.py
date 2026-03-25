@@ -58,7 +58,14 @@ def _arg_accessor(idx: int) -> str:
 # gml_call_expr patterns:
 #   "func_name"              → func_name(_a0, _a1, ...)
 #   "expr with {0} and {1}"  → template substitution (for expressions/operators)
-#   "_a0[@ _a1]"             → raw template (array subscript, etc.)
+#   "_a0[{1}]"               → raw template (array read, etc.)
+#
+# Template expressions should ONLY be used for GML operators with no
+# function equivalent (e.g. array read).  Do not use templates to
+# compose arbitrary logic — that belongs in bridge or prelude.
+#
+# !! UMT BYTECODE 17: Do NOT use [$] [?] [@] struct_set() is_instanceof()
+#    See _verify_bundle.py lint_sources() for the full banned list.
 
 BUILTIN_SPEC: list[tuple[str, str, list[str] | None, str]] = [
     # ── Variable access: instance ────────────────────────────────
@@ -97,6 +104,12 @@ BUILTIN_SPEC: list[tuple[str, str, list[str] | None, str]] = [
     ("gml:ds-list-add",         "ds_list_add",          ["raw", "raw"], "void"),
     ("gml:ds-list-delete",      "ds_list_delete",       ["raw", "raw"], "void"),
     ("gml:ds-list-destroy",     "ds_list_destroy",      ["raw"], "void"),
+    ("gml:ds-exists",           "ds_exists",            ["raw", "raw"], "bool"),
+
+    # ── ds_type constants (expressions, no args) ─────────────────
+    ("gml:ds-type-map",         "ds_type_map",          None, "num"),
+    ("gml:ds-type-list",        "ds_type_list",         None, "num"),
+    ("gml:ds-type-grid",        "ds_type_grid",         None, "num"),
 
     # ── Instance / object ────────────────────────────────────────
     ("gml:instance-find",       "instance_find",        ["raw", "raw"], "wrap"),
@@ -114,22 +127,43 @@ BUILTIN_SPEC: list[tuple[str, str, list[str] | None, str]] = [
     ("gml:object-get-name",     "object_get_name",      ["raw"], "str"),
     ("gml:object-get-sprite",   "object_get_sprite",    ["raw"], "num"),
     ("gml:object-get-parent",   "object_get_parent",    ["raw"], "wrap"),
+    ("gml:object-get-depth",    "object_get_depth",     ["raw"], "num"),
+    ("gml:object-get-mask",     "object_get_mask",      ["raw"], "num"),
+    ("gml:object-get-persistent", "object_get_persistent", ["raw"], "bool"),
+    ("gml:object-get-visible",  "object_get_visible",   ["raw"], "bool"),
+    ("gml:object-get-solid",    "object_get_solid",     ["raw"], "bool"),
+    ("gml:object-get-physics",  "object_get_physics",   ["raw"], "bool"),
     ("gml:object-is-ancestor",  "object_is_ancestor",   ["raw", "raw"], "bool"),
     ("gml:object-exists",       "object_exists",        ["raw"], "bool"),
     ("gml:sprite-get-name",     "sprite_get_name",      ["raw"], "str"),
     ("gml:sprite-get-number",   "sprite_get_number",    ["raw"], "num"),
     ("gml:sprite-get-width",    "sprite_get_width",     ["raw"], "num"),
     ("gml:sprite-get-height",   "sprite_get_height",    ["raw"], "num"),
+    ("gml:sprite-get-xoffset",  "sprite_get_xoffset",   ["raw"], "num"),
+    ("gml:sprite-get-yoffset",  "sprite_get_yoffset",   ["raw"], "num"),
+    ("gml:sprite-get-bbox-left",   "sprite_get_bbox_left",   ["raw"], "num"),
+    ("gml:sprite-get-bbox-top",    "sprite_get_bbox_top",    ["raw"], "num"),
+    ("gml:sprite-get-bbox-right",  "sprite_get_bbox_right",  ["raw"], "num"),
+    ("gml:sprite-get-bbox-bottom", "sprite_get_bbox_bottom", ["raw"], "num"),
     ("gml:sprite-exists",       "sprite_exists",        ["raw"], "bool"),
     ("gml:room-exists",         "room_exists",          ["raw"], "bool"),
+
+    # ── Sound / audio ────────────────────────────────────────────
+    ("gml:audio-exists",        "audio_exists",         ["raw"], "bool"),
+    ("gml:audio-get-name",      "audio_get_name",       ["raw"], "str"),
+    ("gml:audio-get-type",      "audio_get_type",       ["raw"], "str"),
 
     # ── Array ────────────────────────────────────────────────────
     ("gml:array-length",        "array_length",         ["raw"], "num"),
     ("gml:array-get",           "{0}[{1}]",             ["raw", "raw"], "wrap"),
-    ("gml:array-set",           "{0}[@ {1}] = {2}",    ["raw", "raw", "raw"], "void"),
+    ("gml:array-set",           "array_set",            ["raw", "raw", "raw"], "void"),
     ("gml:array-push",          "array_push",           ["raw", "raw"], "void"),
     ("gml:array-create",        "array_create",         ["raw"], "wrap"),
     ("gml:array-copy",          "array_copy",           ["raw"], "wrap"),
+    ("gml:array-sort",          "array_sort",           ["raw", "raw"], "void"),
+
+    # ── Struct ────────────────────────────────────────────────────
+    ("gml:struct-create",       "{}",                   None, "wrap"),
 
     # ── String ───────────────────────────────────────────────────
     ("gml:string-length",       "string_length",        ["raw"], "num"),
@@ -200,14 +234,14 @@ BUILTIN_SPEC: list[tuple[str, str, list[str] | None, str]] = [
 
     # ── Keyboard ─────────────────────────────────────────────────
     ("gml:keyboard-string",         "keyboard_string",            None, "str"),
-    ("gml:keyboard-string-clear!",  'keyboard_string = ""',       None, "void"),
+    ("gml:keyboard-string-clear",   'keyboard_string = ""',       None, "void"),
     ("gml:keyboard-check",          "keyboard_check",             ["num"], "bool"),
     ("gml:keyboard-check-pressed",  "keyboard_check_pressed",     ["num"], "bool"),
     ("gml:keyboard-clear",          "keyboard_clear",             ["num"], "void"),
     ("gml:ord",                     "ord",                        ["str"], "num"),
 
     # ── Clipboard ────────────────────────────────────────────────
-    ("gml:clipboard-has-text?",     "clipboard_has_text",         [], "bool"),
+    ("gml:clipboard-has-text",      "clipboard_has_text",         [], "bool"),
     ("gml:clipboard-get-text",      "clipboard_get_text",         [], "str"),
 
     # ── Draw ─────────────────────────────────────────────────────

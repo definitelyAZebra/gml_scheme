@@ -19,6 +19,18 @@ function scm_display_str(_v) {
         case SCM_PAIR:   return scm__print_list(_v, false);
         case SCM_FN:     return "#<procedure:" + _v.name + ">";
         case SCM_LAMBDA: return "#<procedure:" + _v.name + ">";
+        case SCM_CASE_LAMBDA: return "#<procedure:" + _v.name + ">";
+        case SCM_PORT:
+            var _pdir = (_v.dir == SCM_PORT_IN) ? "input" : "output";
+            var _pkind = "";
+            switch (_v.kind) {
+                case SCM_PORT_STRING:  _pkind = "string";  break;
+                case SCM_PORT_FILE:    _pkind = "file";    break;
+                case SCM_PORT_CONSOLE: _pkind = "console"; break;
+                case SCM_PORT_DEBUG:   _pkind = "debug";   break;
+            }
+            return "#<" + _pdir + "-" + _pkind + "-port>";
+        case SCM_EOF:    return "#<eof>";
         case SCM_VOID:   return "#<void>";
         case SCM_ERR:    return "#<error: " + _v.v + ">";
         case SCM_HANDLE:
@@ -75,6 +87,14 @@ function scm_to_string(_v) {
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
+/// Dispatch to the correct print mode for a sub-value.
+/// _mode: false/0 = display, true/1 = write, 2 = inspect
+function scm__print_val(_v, _mode) {
+    if (_mode == 2) return scm_inspect_str(_v);
+    if (_mode)      return scm_write_str(_v);
+    return scm_display_str(_v);
+}
+
 /// Print a list/dotted-pair. Uses array buffer to avoid O(n²) concat.
 function scm__print_list(_v, _write_mode) {
     var _buf = ["("];
@@ -84,14 +104,14 @@ function scm__print_list(_v, _write_mode) {
     while (_p.t == SCM_PAIR) {
         if (!_first) array_push(_buf, " ");
         _first = false;
-        array_push(_buf, _write_mode ? scm_write_str(_p.car) : scm_display_str(_p.car));
+        array_push(_buf, scm__print_val(_p.car, _write_mode));
         _p = _p.cdr;
     }
 
     // Improper list (dotted pair)
     if (_p.t != SCM_NIL) {
         array_push(_buf, " . ");
-        array_push(_buf, _write_mode ? scm_write_str(_p) : scm_display_str(_p));
+        array_push(_buf, scm__print_val(_p, _write_mode));
     }
 
     array_push(_buf, ")");
@@ -111,7 +131,7 @@ function scm__print_array(_arr, _write_mode) {
     for (var _i = 0; _i < _limit; _i++) {
         if (_i > 0) array_push(_buf, " ");
         var _elem = scm_wrap(_arr[_i]);
-        array_push(_buf, _write_mode ? scm_write_str(_elem) : scm_display_str(_elem));
+        array_push(_buf, scm__print_val(_elem, _write_mode));
     }
     if (_len > _max) {
         array_push(_buf, " ..." + string(_len - _max) + " more");
@@ -136,7 +156,7 @@ function scm__print_struct(_st, _write_mode) {
         var _raw = variable_struct_get(_st, _k);
         var _val = scm__is_tagged(_raw) ? _raw : scm_wrap(_raw);
         array_push(_buf, " " + _k + " ");
-        array_push(_buf, _write_mode ? scm_write_str(_val) : scm_display_str(_val));
+        array_push(_buf, scm__print_val(_val, _write_mode));
     }
     if (_len > _max) {
         array_push(_buf, " ..." + string(_len - _max) + " more");
@@ -145,4 +165,52 @@ function scm__print_struct(_st, _write_mode) {
     var _s = "";
     for (var _j = 0; _j < array_length(_buf); _j++) _s += _buf[_j];
     return _s;
+}
+
+// ── Speculative inspect mode ────────────────────────────────────────
+
+/// Generate speculative suffix for a numeric value.
+/// Probes ds_map, ds_list, and instance_exists at runtime.
+/// Returns "" if nothing matches, or "~map(5)" / "~list(3),map(2)" etc.
+/// ⚠ DUPLICATION: probe logic is shared with scm_bi_inspect in
+///   scm_bridge.gml.  Keep them in sync.
+function scm__inspect_num_suffix(_n) {
+    // Only probe non-negative integers
+    if (_n != floor(_n) || _n < 0) return "";
+
+    // ds_map/ds_list probes removed — too noisy (small integers
+    // almost always coincide with a valid ds handle ID).
+    // Use (inspect n) or (ds-map? n) / (ds-list? n) for explicit probing.
+
+    // Instance IDs in GMS2 start at 100000+; lower values are object indices
+    // and instance_exists() on an object index returns true if ANY instance
+    // of that object exists — that would be a false positive.
+    if (_n >= 100000 && instance_exists(_n)) {
+        return "~inst(" + object_get_name(_n.object_index) + ")";
+    }
+
+    return "";
+}
+
+/// Convert a Scheme value to its inspect string (REPL result display).
+/// Like write_str, but plain numbers get speculative annotations:
+///   42~map(5)   42~map(5),list(3)   100042~inst(o_player)
+/// Recursively inspects elements inside arrays, structs, and lists.
+function scm_inspect_str(_v) {
+    switch (_v.t) {
+        case SCM_NUM:
+            return scm_display_str(_v) + scm__inspect_num_suffix(_v.v);
+        case SCM_STR:
+            return scm_write_str(_v);
+        case SCM_PAIR:
+            return scm__print_list(_v, 2);
+        case SCM_HANDLE:
+            switch (_v.ht) {
+                case SCM_HT_ARRAY:  return scm__print_array(_v.v, 2);
+                case SCM_HT_STRUCT: return scm__print_struct(_v.v, 2);
+                default:            return scm_display_str(_v);
+            }
+        default:
+            return scm_display_str(_v);
+    }
 }

@@ -11,17 +11,7 @@
 /// The log file is created in the game's working directory.
 /// Each call opens, appends, and closes the file — safe even if process is killed.
 function scm_trace(_msg) {
-    // Prefix with elapsed seconds since game start (microsecond precision)
-    var _t = get_timer();  // microseconds since game start
-    var _sec = _t div 1000000;
-    var _ms  = (_t mod 1000000) div 1000;
-    var _ts  = string(_sec) + "." + string_replace(string_format(_ms, 3, 0), " ", "0");
-    var _line = "[" + _ts + "] " + _msg;
-    show_debug_message(_line);
-    var _f = file_text_open_append("scm_trace.log");
-    file_text_write_string(_f, _line);
-    file_text_writeln(_f);
-    file_text_close(_f);
+    show_debug_message(_msg);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -85,6 +75,12 @@ function scm__load_prelude(_env) {
     scm_eval_program(_prelude, _env);
 }
 
+function scm__load_stdlib(_env) {
+    var _stdlib = "@@STDLIB@@";
+
+    scm_eval_program(_stdlib, _env);
+}
+
 // ═══════════════════════════════════════════════════════════════════
 //  Initialization
 // ═══════════════════════════════════════════════════════════════════
@@ -93,7 +89,7 @@ function scm__load_prelude(_env) {
 function scm_init() {
     // Output buffer
     global.__scm_output     = [];
-    global.__scm_output_max = 200;
+    global.__scm_output_max = 10000;
     global.__scm_line_buf   = "";
 
     // Eval fuel (step limit to prevent infinite loops)
@@ -108,11 +104,11 @@ function scm_init() {
     scm_register_gml_builtins(global.scm_env);
     scm_register_bridge(global.scm_env);
 
-    // Load asset metadata (objects, sprites, etc.)
-    scm_meta_init();
-
-    // Load prelude
+    // Load prelude (R5RS standard library)
     scm__load_prelude(global.scm_env);
+
+    // Load stdlib (GML interop & game domain)
+    scm__load_stdlib(global.scm_env);
 
     scm_trace("[scm] Scheme interpreter initialized.");
 }

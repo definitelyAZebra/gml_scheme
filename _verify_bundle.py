@@ -1,9 +1,73 @@
-"""Quick verification that all scm_bi_* references in the bundle are defined."""
+"""Quick verification that all scm_bi_* references in the bundle are defined.
+
+Also provides lint_sources() to catch GML syntax forbidden in UMT bytecode 17.
+"""
 from __future__ import annotations
 
 import re
 import sys
 from pathlib import Path
+
+# ── UMT bytecode 17 forbidden patterns ──────────────────────────
+# These GML syntaxes are NOT supported by UMT's bytecode 17 compiler.
+# Using them causes hard-to-debug runtime errors (e.g. "unable to
+# convert string to int64" when [$] is misinterpreted as array access).
+#
+# Replacements:
+#   struct[$ key]            → variable_struct_get(struct, key)
+#   struct[$ key] = val      → variable_struct_set(struct, key, val)
+#   map[? key]               → ds_map_find_value(map, key)
+#   map[? key] = val         → ds_map_set(map, key, val)
+#   arr[@ i]                 → array_get(arr, i) (reads work with [])
+#   arr[@ i] = val           → array_set(arr, i, val)
+#   struct_set(s, k, v)      → variable_struct_set(s, k, v)
+#   is_instanceof(x, T)      → NOT available, use manual type checks
+_FORBIDDEN_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r'\[\$\s'),
+     "[$] struct accessor — use variable_struct_get() / variable_struct_set()"),
+    (re.compile(r'\[\?\s'),
+     "[?] ds_map accessor — use ds_map_find_value() / ds_map_set()"),
+    (re.compile(r'\[@\s'),
+     "[@] array accessor — use array_get() / array_set()"),
+    (re.compile(r'\bstruct_set\s*\('),
+     "struct_set() (GML 2024.6+) — use variable_struct_set()"),
+    (re.compile(r'\bis_instanceof\s*\('),
+     "is_instanceof() — not available in bytecode 17"),
+]
+
+
+def lint_sources(project_root: Path) -> bool:
+    """Scan .gml sources for syntax forbidden in UMT bytecode 17.
+
+    Returns True if no violations found.
+    """
+    src_dir = project_root / "src"
+    violations: list[str] = []
+
+    for gml_path in sorted(src_dir.glob("*.gml")):
+        lines = gml_path.read_text(encoding="utf-8").splitlines()
+        for lineno, line in enumerate(lines, 1):
+            # Skip comments
+            stripped = line.lstrip()
+            if stripped.startswith("//"):
+                continue
+            for pattern, msg in _FORBIDDEN_PATTERNS:
+                if pattern.search(line):
+                    violations.append(
+                        f"  {gml_path.name}:{lineno}: {msg}\n"
+                        f"    > {line.rstrip()}"
+                    )
+
+    if violations:
+        print(f"\n!! LINT FAILED — {len(violations)} forbidden pattern(s) found:")
+        print("   (UMT bytecode 17 does not support these GML features)\n")
+        for v in violations:
+            print(v)
+        print()
+        return False
+
+    print("Lint: no forbidden patterns found.")
+    return True
 
 
 def verify(project_root: Path) -> bool:

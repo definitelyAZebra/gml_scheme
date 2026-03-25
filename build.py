@@ -9,7 +9,7 @@ Usage:
 Pipeline:
     1. [--export only] run_export_meta  → data/meta/*.json
     2. codegen_builtins                → src/scm_gml_builtins.gml
-    3. codegen_meta                    → src/scm_meta.gml + data/trie/*.json
+    3. codegen_meta                    → validates data/meta/*.json (trie/masks built at GML runtime)
     4. codegen_help                    → src/scm_help.gml
     5. bundle                          → build/scm_bundle.gml + stubs + assets
     6. verify                          → check all refs resolve
@@ -80,6 +80,14 @@ def step_codegen_help(locale: str = "zh") -> bool:
     return True
 
 
+def step_lint() -> bool:
+    t0 = _step("Lint (UMT bytecode 17 compatibility)")
+    import _verify_bundle
+    ok = _verify_bundle.lint_sources(HERE)
+    _done(t0)
+    return ok
+
+
 def step_bundle() -> bool:
     t0 = _step("Bundle (bundle.py)")
     import bundle
@@ -134,6 +142,12 @@ def main() -> None:
 
         ok = step_codegen_help(locale=args.locale)
         steps.append(("codegen_help", ok))
+
+    ok = step_lint()
+    steps.append(("lint", ok))
+    if not ok:
+        _print_summary(steps, t_total)
+        sys.exit(1)
 
     ok = step_bundle()
     steps.append(("bundle", ok))

@@ -4,10 +4,13 @@ A Scheme subset interpreter implemented in GML (GameMaker Language), designed fo
 
 ## Why Scheme?
 
-- **S-expressions are REPL-friendly** — one line = one complete expression, no multi-line input management
-- **Closures + higher-order functions** — compose complex game operation pipelines
-- **Minimal syntax** — the interpreter is compact, easy to inject into a game
-- **Sandboxed** — game state is only accessible via bridge functions
+Scheme hits a unique sweet spot: **extremely powerful as a scripting layer, yet tractable to implement from scratch in GML**.
+
+- **Trivial to parse** — parenthesized syntax needs no grammar tables or libraries; a recursive-descent reader fits in ~100 lines of GML
+- **Minimal core, maximum leverage** — a handful of special forms plus closures and first-class functions cover virtually all use cases; the language is small enough to implement fully, not just sketch
+- **Homoiconicity** — code is data; `define-macro` can construct and transform ASTs directly, letting the bridge API feel idiomatic without any code generation
+- **TCO is well-specified and necessary** — GML's call stack caps at ~256 frames; the trampoline pattern is a clean, self-contained solution that makes safe recursion and iteration possible at all
+- **Single-file injection** — the entire interpreter bundles to one `.gml` for frictionless UMT installation
 
 ## Features
 
@@ -437,9 +440,9 @@ codegen_builtins.py
 
 - [x] In-game REPL console UI (text input + output display, syntax highlighting)
 - [x] `define-macro` with basic pattern matching (Lisp-style, non-hygienic)
-- [ ] Error stack traces
-- [ ] Mod hot-reload: watch `.scm` file changes
-- [ ] Persistent environment: save/restore definitions to file
+- [x] Tab inline completion + F3 fuzzy search overlay
+- [x] Bilingual in-game help database
+- [x] Stub pre-registration installer (no bytecode patching)
 
 ## License
 
